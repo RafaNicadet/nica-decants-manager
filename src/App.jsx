@@ -2095,7 +2095,7 @@ function openCustomerForm(customer = null) {
         <Metric icon={<Wallet/>} label="Cobros recibidos" value={money(totalPayments)} />
         <Metric icon={<Wallet/>} label="Gastos operativos" value={money(totalExpenses)} />
         <Metric icon={<Wallet/>} label="Comisiones de vendedores" value={money(totalCommissions)} />
-        <Metric icon={<Sprout/>> label="Resultado estimado*" value={money(estimatedResult)} />
+        <Metric icon={<Sprout/>} label="Resultado estimado*" value={money(estimatedResult)} />
       </div>
 
       <div className="finance-summary-grid">
