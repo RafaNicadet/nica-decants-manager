@@ -1428,9 +1428,9 @@ function openCustomerForm(customer = null) {
           </aside>
         </form>
       </section>}
-      {section === "Costos y compras" && isAdmin && <section className="content">
-  <div className="panel" style={{ marginBottom: 16 }}>
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+      {section === "Costos y compras" && isAdmin && <section className="content costs-page">
+  <div className="panel costs-overview">
+    <div className="costs-overview-heading">
       <div>
         <h2>Costos y compras</h2>
         <p>Consulta los costos registrados y el historial de compras de tus productos.</p>
@@ -1440,35 +1440,34 @@ function openCustomerForm(customer = null) {
       </button>
     </div>
     {purchaseHistoryError && <p role="alert" style={{ color: "#b91c1c" }}>{purchaseHistoryError}</p>}
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginTop: 18 }}>
-      <div className="panel">
+    <div className="costs-metrics">
+      <div className="costs-metric-card">
         <p>Valor con costo conocido</p>
         <h3>{money(costProducts.reduce((sum, p) => {
           const hasCost = p.unit_cost !== null && p.unit_cost !== undefined && Number(p.unit_cost) > 0;
           return sum + (hasCost ? Number(p.stock_qty || 0) * Number(p.unit_cost) : 0);
         }, 0))}</h3>
       </div>
-      <div className="panel">
+      <div className="costs-metric-card">
         <p>Productos con costo</p>
         <h3>{costProducts.filter(p => p.unit_cost !== null && p.unit_cost !== undefined && Number(p.unit_cost) > 0).length}</h3>
       </div>
-      <div className="panel">
+      <div className="costs-metric-card">
         <p>Productos sin costo</p>
         <h3>{costProducts.filter(p => p.unit_cost === null || p.unit_cost === undefined || Number(p.unit_cost) <= 0).length}</h3>
       </div>
-      <div className="panel">
+      <div className="costs-metric-card">
         <p>Compras registradas</p>
         <h3>{purchaseHistory.length}</h3>
       </div>
     </div>
   </div>
 
-  <div className="panel" style={{ marginBottom: 16 }}>
+  <div className="panel costs-purchase-panel">
 
-    <h3>Registrar nueva compra</h3>
-    <p className="muted">Registra el pago al proveedor. El inventario y el costo promedio se actualizarán automáticamente.</p>
+    <div className="panel-heading"><div><p className="eyebrow">ABASTECIMIENTO</p><h3>Registrar nueva compra</h3><p className="muted">Registra el pago al proveedor. El inventario y el costo promedio se actualizarán automáticamente.</p></div></div>
 
-    <form className="form-grid" onSubmit={savePurchase}>
+    <form className="form-grid costs-form" onSubmit={savePurchase}>
       <label>
         Producto
         <select
@@ -1579,7 +1578,7 @@ function openCustomerForm(customer = null) {
         />
       </label>
 
-      <div className="panel">
+      <div className="costs-unit-preview">
         <p>Costo unitario calculado en córdobas</p>
         <h3>
           {money(
@@ -1593,7 +1592,7 @@ function openCustomerForm(customer = null) {
         <p className="muted">Este costo se utilizará para calcular el costo promedio del producto.</p>
       </div>
 
-      <button type="submit" disabled={purchaseSaving}>
+      <button className="primary costs-submit" type="submit" disabled={purchaseSaving}>
         {purchaseSaving ? "Registrando compra..." : "Registrar compra y actualizar inventario"}
       </button>
     </form>
@@ -1629,8 +1628,8 @@ function openCustomerForm(customer = null) {
     </div>}
   </div>
 
-  <div className="panel">
-    <h3>Historial de compras</h3>
+  <div className="panel costs-history-panel">
+    <div className="panel-heading"><div><p className="eyebrow">MOVIMIENTOS</p><h3>Historial de compras</h3><p className="muted">Revisa los pagos y costos registrados de cada producto.</p></div></div>
     {purchaseHistory.length === 0 ? <p>No hay compras registradas todavía, o no se han cargado los datos.</p> :
     <div style={{ overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -1667,7 +1666,7 @@ function openCustomerForm(customer = null) {
   </div>
 </section>}
 
-{section === "Importaciones" && isAdmin && <section className="content">
+{section === "Importaciones" && isAdmin && <section className="content imports-page">
   <style>{`
     .import-form-grid {
       display: grid;
@@ -1714,9 +1713,9 @@ function openCustomerForm(customer = null) {
       .import-form-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
     }
   `}</style>
-  <div className="panel">
+  <div className="panel imports-create-panel">
     <div className="panel-heading">
-      <div><h3>Nueva importación</h3><p className="muted">Registra compras enviadas desde Estados Unidos, China u otro país.</p></div>
+      <div><p className="eyebrow">ABASTECIMIENTO INTERNACIONAL</p><h3>Nueva importación</h3><p className="muted">Registra compras enviadas desde Estados Unidos, China u otro país.</p></div>
       <span className="pill">{imports.length} registros</span>
     </div>
     <form className="form-grid import-form-grid" onSubmit={saveImport}>
@@ -1817,7 +1816,7 @@ function openCustomerForm(customer = null) {
         <span className="muted">Costo en dólares y córdobas</span>
       </div>
       <div className="import-subheading">Productos de la importación</div>
-      {importItems.map((item, index) => <div key={index} className="form-grid" style={{gridColumn:"1 / -1",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))"}}>
+      {importItems.map((item, index) => <div key={index} className="form-grid import-item-row">
         <label>Producto
           <select value={item.product_id} onChange={e=>setImportItems(items=>items.map((row,i)=>i===index?{...row,product_id:e.target.value}:row))}>
             <option value="">Selecciona un producto</option>{products.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
@@ -1835,8 +1834,8 @@ function openCustomerForm(customer = null) {
       <div style={{gridColumn:"1 / -1"}}><button className="primary" disabled={savingForm}>{savingForm ? "Guardando…" : "Guardar importación"}</button></div>
     </form>
   </div>
-  <div className="panel">
-    <div className="panel-heading"><div><h3>Historial de importaciones</h3><p className="muted">Registros guardados en Supabase.</p></div><button className="secondary" onClick={loadImports} disabled={importsLoading}>{importsLoading ? "Cargando…" : "Actualizar"}</button></div>
+  <div className="panel imports-history-panel">
+    <div className="panel-heading"><div><p className="eyebrow">SEGUIMIENTO</p><h3>Historial de importaciones</h3><p className="muted">Registros guardados en Supabase.</p></div><button className="secondary" onClick={loadImports} disabled={importsLoading}>{importsLoading ? "Cargando…" : "Actualizar"}</button></div>
     {importsLoading ? <p className="muted">Cargando importaciones…</p> : !imports.length ? <Empty text="Todavía no hay importaciones registradas."/> :
       <div className="table-wrap"><table><thead><tr><th>Proveedor / referencia</th><th>Origen</th><th>Agencia</th><th>Transporte</th><th>Fecha</th><th>Estado</th><th style={{textAlign:"right"}}>Compra</th><th style={{textAlign:"right"}}>Envío</th></tr></thead><tbody>
       {imports.map(item=><tr key={item.id}>
@@ -1857,9 +1856,9 @@ function openCustomerForm(customer = null) {
 
 
 {section === "Importaciones" && isAdmin && <section className="content">
-  <div className="panel">
+  <div className="panel imports-operations-panel">
     <div className="panel-heading">
-      <div><h3>Agregar paquete</h3><p className="muted">Registra tantos paquetes como pertenezcan a una misma importación.</p></div>
+      <div><p className="eyebrow">LOGÍSTICA Y PAGOS</p><h3>Agregar paquete</h3><p className="muted">Registra tantos paquetes como pertenezcan a una misma importación.</p></div>
     </div>
     {!imports.length ? <p className="muted">Primero registra una importación.</p> : <>
       <form className="form-grid import-form-grid" onSubmit={saveExtraPackage}>
