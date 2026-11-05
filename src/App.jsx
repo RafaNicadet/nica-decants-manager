@@ -9,7 +9,7 @@ const money = (value) => new Intl.NumberFormat("es-NI", {
   style: "currency", currency: "NIO", maximumFractionDigits: 2
 }).format(Number(value || 0));
 
-function Login({ onNotice }) {
+function Login({ onNotice, notice }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -49,6 +49,7 @@ function Login({ onNotice }) {
         </label>}
         <button className="primary" disabled={busy}>{busy ? "Procesando…" : mode === "login" ? "Iniciar sesión" : "Enviar enlace de recuperación"}</button>
       </form>
+      {notice && <div className="warning" role="status" style={{marginTop:12}}>{notice}</div>}
       <button className="text-button" onClick={()=>setMode(mode === "login" ? "reset" : "login")}>
         {mode === "login" ? "¿Olvidaste tu contraseña?" : "Volver al inicio de sesión"}
       </button>
@@ -1009,7 +1010,7 @@ function openCustomerForm(customer = null) {
   </main>;
 
   if (loading && !session) return <div className="center-state">Cargando…</div>;
-  if (!session) return <Login onNotice={setNotice}/>;
+  if (!session) return <Login onNotice={setNotice} notice={notice}/>;
 
   async function loadFinanceData() {
     if (!supabase || profile?.role !== "admin") return;
