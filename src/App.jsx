@@ -1437,6 +1437,7 @@ function openCustomerForm(customer = null) {
             <div><span>Productos</span><strong>{money(saleSubtotal)}</strong></div><div><span>Descuento</span><strong>− {money(saleDiscount)}</strong></div>
             {saleDeliveryType !== "none" && <div><span>Delivery</span><strong>{money(saleDeliveryCharge)}</strong></div>}
             <div className="sales-summary-total"><span>Total</span><strong>{money(saleTotal)}</strong></div>
+            {saleSalesChannel === "seller" && profile?.role === "admin" && <div className="sales-summary-commission"><span>Comisión del vendedor</span><strong>− {money(saleCommissionAmount)}</strong></div>}
             <p className="muted">Pago recibido: {salePaymentCurrency === "USD" ? `US$${Number(salePaymentAmount||0).toFixed(2)} · ` : ""}{money(Number(salePaymentAmount||0)*(salePaymentCurrency === "USD" ? Number(usdNioRate||0) : 1))}</p>
             <p className="muted">Saldo pendiente: {money(Math.max(0,saleTotal-(Number(salePaymentAmount||0)*(salePaymentCurrency === "USD" ? Number(usdNioRate||0) : 1))))}</p>
             <button className="sales-confirm-button" type="submit" disabled={savingForm || !saleCart.length}>{savingForm ? "Registrando…" : "Confirmar venta"}</button>
