@@ -60,8 +60,11 @@ function Login({ onNotice }) {
 function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
+  const [usdNioRate, setUsdNioRate] = useState("37.11");
+  const [rateSaving, setRateSaving] = useState(false);
   const [products, setProducts] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [customerBalances, setCustomerBalances] = useState({});
   const [costProducts, setCostProducts] = useState([]);
   const [purchaseHistory, setPurchaseHistory] = useState([]);
   const [purchaseHistoryLoading, setPurchaseHistoryLoading] = useState(false);
@@ -143,6 +146,7 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
     description: "",
     category: "Publicidad",
     amount: "",
+    currency: "NIO",
     expense_date: new Date().toLocaleDateString("en-CA"),
     payment_method: "transfer",
     receipt_path: ""
@@ -176,7 +180,7 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
     purchase_total: "0",
     package_weight_lb: "0",
     package_rate_per_lb: "7",
-    exchange_rate: "36.80",
+    exchange_rate: "37.11",
     notes: ""
   });
 
@@ -230,7 +234,7 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
     setImportsLoading(true);
     const { data, error } = await supabase
       .from("import_shipments")
-      .select("*, import_packages(*), import_payments(*)")
+      .select("*, import_packages(*), import_payments(*), import_shipment_items(*)")
       .order("created_at", { ascending: false });
     setImportsLoading(false);
     if (error) {
@@ -298,6 +302,24 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
       return;
     }
 
+    const lines = importItems.filter(item => item.product_id && Number(item.quantity) > 0 && Number(item.amount_original) > 0);
+    if (lines.length) {
+      const { error: linesError } = await supabase.from("import_shipment_items").insert(lines.map(item => ({
+        shipment_id: shipment.id,
+        product_id: item.product_id,
+        quantity: Number(item.quantity),
+        currency: item.currency,
+        amount_original: Number(item.amount_original),
+        exchange_rate: item.currency === "USD" ? exchangeRate : 1
+      })));
+      if (linesError) {
+        setSavingForm(false);
+        setNotice("La importación se guardó, pero no se pudieron asociar los productos: " + linesError.message);
+        await loadImports();
+        return;
+      }
+    }
+
     if (packageWeight > 0 && packageRate > 0) {
       const { error: packageError } = await supabase.from("import_packages").insert({
         shipment_id: shipment.id,
@@ -328,9 +350,10 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
       purchase_total: "0",
       package_weight_lb: "0",
       package_rate_per_lb: "7",
-    exchange_rate: "36.80",
+    exchange_rate: "37.11",
       notes: ""
     });
+    setImportItems([{product_id:"",quantity:"1",amount_original:"",currency:"USD"}]);
     setNotice("Importación guardada correctamente.");
     await loadImports();
   }
@@ -380,13 +403,23 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
     await loadImports();
   }
 
+  async function receiveImport(shipment) {
+    if (!window.confirm(`¿Registrar en inventario los productos pendientes de ${shipment.supplier}?`)) return;
+    setSavingForm(true);
+    const { data, error } = await supabase.rpc("receive_import_shipment", {p_shipment_id: shipment.id});
+    setSavingForm(false);
+    if (error) { setNotice("No se pudo recibir la importación: " + error.message); return; }
+    setNotice(data?.message || "Importación recibida y agregada al inventario.");
+    await Promise.all([loadImports(), refresh(), loadPurchaseHistory()]);
+  }
+
   async function saveImportPayment(event) {
     event.preventDefault();
 
     const amountOriginal = Number(paymentForm.amount);
     const selectedShipment = imports.find(i => i.id === paymentForm.shipment_id);
     const exchangeRate = paymentForm.currency === "USD"
-      ? Number(selectedShipment?.exchange_rate)
+      ? Number(usdNioRate)
       : 1;
 
     if (!selectedShipment || !Number.isFinite(amountOriginal) || amountOriginal <= 0) {
@@ -633,11 +666,19 @@ function openCustomerForm(customer = null) {
   }
 
   async function loadCustomers() {
-    const { data, error } = await supabase.from("customers")
-      .select("id, full_name, phone, email, active, created_at")
-      .eq("active", true).order("full_name");
-    if (error) setNotice(error.message);
-    else setCustomers(data ?? []);
+    const [customersResult, salesResult, paymentsResult] = await Promise.all([
+      supabase.from("customers").select("id, full_name, phone, email, active, created_at").eq("active", true).order("full_name"),
+      supabase.from("sales").select("id, customer_id, total").eq("status", "issued").not("customer_id", "is", null),
+      supabase.from("payments").select("sale_id, amount")
+    ]);
+    const failed = [customersResult, salesResult, paymentsResult].find(result => result.error);
+    if (failed) { setNotice(failed.error.message); return; }
+    const paidBySale = new Map();
+    for (const payment of paymentsResult.data ?? []) paidBySale.set(payment.sale_id, (paidBySale.get(payment.sale_id) || 0) + Number(payment.amount || 0));
+    const balances = {};
+    for (const sale of salesResult.data ?? []) balances[sale.customer_id] = (balances[sale.customer_id] || 0) + Math.max(0, Number(sale.total || 0) - (paidBySale.get(sale.id) || 0));
+    setCustomerBalances(balances);
+    setCustomers(customersResult.data ?? []);
   }
 
   async function saveCustomer(event) {
@@ -751,11 +792,14 @@ function openCustomerForm(customer = null) {
       const { data, error } = await supabase.rpc("create_sale", {
         p_items: saleCart.map(item => ({
           product_id: item.product_id,
-          quantity: Number(item.quantity)
+          quantity: Number(item.quantity),
+          location_id: "home"
         })),
         p_customer_id: saleCustomerId || null,
         p_customer_name: saleCustomerName.trim() || "Cliente general",
         p_customer_phone: saleCustomerPhone.trim() || null,
+        p_sales_channel: "direct",
+        p_salesperson_id: session.user.id,
         p_discount: discount,
         p_delivery_type: saleDeliveryType,
         p_delivery_address: deliveryAddress,
@@ -922,6 +966,32 @@ function openCustomerForm(customer = null) {
     }
   }, [section, financeMonth, profile?.role]);
 
+  useEffect(() => {
+    if (!supabase || profile?.role !== "admin") return;
+    supabase.rpc("get_usd_nio_rate").then(({ data, error }) => {
+      if (error) setNotice(`No se pudo cargar la tasa de cambio: ${error.message}`);
+      else if (Number(data) > 0) setUsdNioRate(String(data));
+    });
+  }, [profile?.role]);
+
+  useEffect(() => {
+    setPurchaseForm(current => current.currency === "USD" ? {...current, exchange_rate: usdNioRate} : current);
+    setImportForm(current => ({...current, exchange_rate: usdNioRate}));
+    setPaymentForm(current => current.currency === "USD" ? {...current, exchange_rate: usdNioRate} : current);
+  }, [usdNioRate]);
+
+  async function saveUsdNioRate() {
+    const rate = Number(usdNioRate);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      setNotice("La tasa USD/NIO debe ser mayor que cero.");
+      return;
+    }
+    setRateSaving(true);
+    const { error } = await supabase.rpc("set_usd_nio_rate", {p_rate: rate});
+    setRateSaving(false);
+    setNotice(error ? `No se pudo guardar la tasa: ${error.message}` : "Tasa USD/NIO actualizada. Los registros anteriores conservan su tasa.");
+  }
+
   if (!isSupabaseConfigured) return <main className="setup-wrap">
     <section className="setup-card">
       <div className="brand-mark"><Sprout size={30}/></div>
@@ -957,7 +1027,7 @@ function openCustomerForm(customer = null) {
       const [expenseResult, salesResult, paymentResult, movementResult] =
         await Promise.all([
           supabase.from("expenses").select(
-            "id, description, category, amount, expense_date, payment_method, receipt_path, created_at"
+            "id, description, category, amount, amount_original, currency, exchange_rate, expense_date, payment_method, receipt_path, created_at"
           ).gte("expense_date", from).lt("expense_date", nextMonth)
             .order("expense_date", { ascending: false }),
 
@@ -1010,7 +1080,10 @@ function openCustomerForm(customer = null) {
     const payload = {
       description: expenseForm.description.trim(),
       category: expenseForm.category,
-      amount,
+      currency: expenseForm.currency,
+      amount_original: amount,
+      exchange_rate: expenseForm.currency === "USD" ? Number(usdNioRate) : 1,
+      amount: expenseForm.currency === "USD" ? amount * Number(usdNioRate) : amount,
       expense_date: expenseForm.expense_date,
       payment_method: expenseForm.payment_method,
       receipt_path: expenseForm.receipt_path.trim() || null,
@@ -1034,6 +1107,7 @@ function openCustomerForm(customer = null) {
         description: "",
         category: "Publicidad",
         amount: "",
+        currency: "NIO",
         expense_date: new Date().toLocaleDateString("en-CA"),
         payment_method: "transfer",
         receipt_path: ""
@@ -1053,7 +1127,8 @@ function openCustomerForm(customer = null) {
     setExpenseForm({
       description: expense.description || "",
       category: expense.category || "Otros",
-      amount: String(expense.amount ?? ""),
+      amount: String(expense.amount_original ?? expense.amount ?? ""),
+      currency: expense.currency || "NIO",
       expense_date: expense.expense_date || "",
       payment_method: expense.payment_method || "other",
       receipt_path: expense.receipt_path || ""
@@ -1089,13 +1164,19 @@ function openCustomerForm(customer = null) {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark small-mark"><Sprout size={22}/></div><div><strong>Nica Decants</strong><small>MANAGER</small></div></div>
-      <nav>{nav.map(([name, Icon]) => <button key={name} className={section===name ? "nav-item selected" : "nav-item"} onClick={()=>{setSection(name); if(name==="Costos y compras") loadPurchaseHistory(); if(name==="Importaciones") loadImports();}}><Icon size={18}/>{name}</button>)}</nav>
+      <nav>{nav.map(([name, Icon]) => <button key={name} className={section===name ? "nav-item selected" : "nav-item"} onClick={()=>{setSection(name); if(name==="Costos y compras") loadPurchaseHistory(); if(name==="Importaciones") loadImports(); if(name==="Clientes") loadCustomers();}}><Icon size={18}/>{name}</button>)}</nav>
       <div className="side-bottom"><ShieldCheck size={17}/><span>{isAdmin ? "Administrador" : "Empleado"}<small>Permisos según tu rol</small></span></div>
     </aside>
     <main className="main-area">
       <header className="topbar">
         <div><p className="eyebrow">NICA DECANTS / OPERACIONES</p><h1>{section}</h1></div>
-        <div className="user-area"><span className="user-name">{profile?.display_name || session.user.email}</span><button className="icon-button" title="Cerrar sesión" onClick={signOut}><LogOut size={18}/></button></div>
+        <div className="user-area">
+          {isAdmin && <label style={{display:"flex",alignItems:"center",gap:6}}>USD/NIO
+            <input aria-label="Tasa USD/NIO" type="number" min="0.0001" step="0.0001" value={usdNioRate} onChange={e=>setUsdNioRate(e.target.value)} style={{width:100}} />
+            <button className="secondary" type="button" disabled={rateSaving} onClick={saveUsdNioRate}>{rateSaving ? "Guardando…" : "Guardar tasa"}</button>
+          </label>}
+          <span className="user-name">{profile?.display_name || session.user.email}</span><button className="icon-button" title="Cerrar sesión" onClick={signOut}><LogOut size={18}/></button>
+        </div>
       </header>
       {notice && <div className="notice" role="status">{notice}<button onClick={()=>setNotice("")}>Cerrar</button></div>}
       {loading && <p className="muted">Sincronizando con la base de datos…</p>}
@@ -1194,7 +1275,7 @@ function openCustomerForm(customer = null) {
           <label>Correo electrónico<input type="email" value={customerForm.email} onChange={e=>setCustomerForm({...customerForm,email:e.target.value})}/></label>
           <div style={{display:"flex",gap:8}}><button type="submit" disabled={savingForm}>{savingForm ? "Guardando..." : "Guardar cliente"}</button><button type="button" className="secondary" onClick={()=>setCustomerFormOpen(false)}>Cancelar</button></div>
         </form>}
-        {customers.length ? <div className="table-wrap"><table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Correo</th><th>Acciones</th></tr></thead><tbody>{customers.map(c=><tr key={c.id}><td>{c.full_name}</td><td>{c.phone || "—"}</td><td>{c.email || "—"}</td><td><button className="secondary" onClick={()=>openCustomerForm(c)}>Editar</button></td></tr>)}</tbody></table></div> : <Empty text="Todavía no hay clientes. Puedes agregar el primero con el botón de arriba."/>}
+        {customers.length ? <div className="table-wrap"><table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Correo</th><th>Saldo pendiente</th><th>Acciones</th></tr></thead><tbody>{customers.map(c=><tr key={c.id}><td>{c.full_name}</td><td>{c.phone || "—"}</td><td>{c.email || "—"}</td><td>{money(customerBalances[c.id] || 0)}</td><td><button className="secondary" onClick={()=>openCustomerForm(c)}>Editar</button></td></tr>)}</tbody></table></div> : <Empty text="Todavía no hay clientes. Puedes agregar el primero con el botón de arriba."/>}
       </div></section>}
       {section === "Ventas" && <section className="content">
         <div className="panel">
@@ -1623,6 +1704,7 @@ function openCustomerForm(customer = null) {
         >
           <option value="air">Aéreo — US$7.00/lb</option>
           <option value="sea">Marítimo — US$2.60/lb</option>
+          <option value="ground">Terrestre — US$7.00/lb</option>
         </select>
       </label>
       <label>Referencia / pedido
@@ -1680,6 +1762,19 @@ function openCustomerForm(customer = null) {
         </div>
         <span className="muted">Costo en dólares y córdobas</span>
       </div>
+      <div className="import-subheading">Productos de la importación</div>
+      {importItems.map((item, index) => <div key={index} className="form-grid" style={{gridColumn:"1 / -1",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))"}}>
+        <label>Producto
+          <select value={item.product_id} onChange={e=>setImportItems(items=>items.map((row,i)=>i===index?{...row,product_id:e.target.value}:row))}>
+            <option value="">Selecciona un producto</option>{products.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </label>
+        <label>Cantidad<input type="number" min="0.001" step="0.001" value={item.quantity} onChange={e=>setImportItems(items=>items.map((row,i)=>i===index?{...row,quantity:e.target.value}:row))}/></label>
+        <label>Moneda<select value={item.currency} onChange={e=>setImportItems(items=>items.map((row,i)=>i===index?{...row,currency:e.target.value}:row))}><option value="USD">USD</option><option value="NIO">NIO</option></select></label>
+        <label>Importe del producto<input type="number" min="0" step="0.01" value={item.amount_original} onChange={e=>setImportItems(items=>items.map((row,i)=>i===index?{...row,amount_original:e.target.value}:row))}/></label>
+        {importItems.length > 1 && <button type="button" className="secondary" onClick={()=>setImportItems(items=>items.filter((_,i)=>i!==index))}>Quitar línea</button>}
+      </div>)}
+      <button type="button" className="secondary" style={{gridColumn:"1 / -1",justifySelf:"start"}} onClick={()=>setImportItems(items=>[...items,{product_id:"",quantity:"1",amount_original:"",currency:"USD"}])}>Agregar producto</button>
       <label style={{gridColumn:"1 / -1"}}>Notas
         <textarea value={importForm.notes} onChange={e=>setImportForm({...importForm,notes:e.target.value})} rows="2" placeholder="Detalles del pedido o envío"/>
       </label>
@@ -1693,11 +1788,13 @@ function openCustomerForm(customer = null) {
       {imports.map(item=><tr key={item.id}>
         <td><strong>{item.supplier}</strong><small>{item.reference || "Sin referencia"}</small></td>
         <td>{item.origin_country}</td><td>{item.shipping_agency}</td>
-        <td>{item.transport_mode === "air" ? "Aéreo" : "Marítimo"}</td>
+        <td>{({air:"Aéreo",sea:"Marítimo",ground:"Terrestre"})[item.transport_mode] || item.transport_mode}</td>
         <td>{item.ordered_at ? new Date(item.ordered_at + "T12:00:00").toLocaleDateString("es-NI") : "—"}</td>
         <td>{({pending:"Pendiente",in_transit:"En tránsito",received:"Recibida",cancelled:"Cancelada"})[item.status] || item.status}</td>
         <td style={{textAlign:"right"}}>{money(item.purchase_total)}</td>
-        <td style={{textAlign:"right"}}>{money((item.import_packages ?? []).reduce((sum, pack) => sum + Number(pack.shipping_cost || 0), 0))}</td>
+        <td style={{textAlign:"right"}}>{money((item.import_packages ?? []).reduce((sum, pack) => sum + Number(pack.shipping_cost || 0), 0))}
+          {item.status !== "received" && (item.import_shipment_items ?? []).length > 0 && <button className="secondary" type="button" disabled={savingForm} onClick={()=>receiveImport(item)}>{savingForm ? "Procesando…" : "Recibir productos"}</button>}
+        </td>
       </tr>)}
       </tbody></table></div>
     }
@@ -1964,7 +2061,12 @@ function openCustomerForm(customer = null) {
             <option>Otros</option>
           </select>
         </label>
-        <label>Monto (C$)
+        <label>Moneda
+          <select value={expenseForm.currency} onChange={e => setExpenseForm({...expenseForm, currency:e.target.value})}>
+            <option value="NIO">Córdobas (C$)</option><option value="USD">Dólares (US$)</option>
+          </select>
+        </label>
+        <label>Monto ({expenseForm.currency === "USD" ? "US$" : "C$"})
           <input required type="number" min="0.01" step="0.01" value={expenseForm.amount}
             onChange={e => setExpenseForm({...expenseForm, amount:e.target.value})} placeholder="0.00" />
         </label>
@@ -1992,7 +2094,7 @@ function openCustomerForm(customer = null) {
           </button>
           {expenseEditing && <button className="secondary" type="button" onClick={() => {
             setExpenseEditing(null);
-            setExpenseForm({description:"",category:"Publicidad",amount:"",
+            setExpenseForm({description:"",category:"Publicidad",amount:"",currency:"NIO",
               expense_date:new Date().toLocaleDateString("en-CA"),payment_method:"transfer",receipt_path:""});
           }}>Cancelar edición</button>}
         </div>
@@ -2012,7 +2114,7 @@ function openCustomerForm(customer = null) {
             <td><strong>{expense.description}</strong>{expense.receipt_path && <small>Comprobante: {expense.receipt_path}</small>}</td>
             <td>{expense.category}</td>
             <td>{methodLabels[expense.payment_method] || expense.payment_method}</td>
-            <td>{money(expense.amount)}</td>
+            <td>{expense.currency === "USD" ? `US$${Number(expense.amount_original || 0).toFixed(2)} · ` : ""}{money(expense.amount)}</td>
             <td><div className="finance-actions">
               <button type="button" className="secondary" onClick={() => editFinanceExpense(expense)}>Editar</button>
               <button type="button" className="secondary danger-action" onClick={() => deleteFinanceExpense(expense)}>Eliminar</button>
