@@ -1,0 +1,541 @@
+import React from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Sprout, LayoutDashboard, Package, Users, ReceiptText, Wallet,
+  LogOut, Search, AlertTriangle, RefreshCw, ShieldCheck, LockKeyhole
+} from "lucide-react";
+import { isSupabaseConfigured, supabase } from "./supabase";
+const money = (value) => new Intl.NumberFormat("es-NI", {
+  style: "currency", currency: "NIO", maximumFractionDigits: 2
+}).format(Number(value || 0));
+
+function Login({ onNotice }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState("login");
+
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true);
+    onNotice("");
+    try {
+      const result = mode === "login"
+        ? await supabase.auth.signInWithPassword({ email, password })
+        : await supabase.auth.resetPasswordForEmail(email);
+      if (result.error) throw result.error;
+      onNotice(mode === "login"
+        ? "Sesión iniciada."
+        : "Si el correo está registrado, recibirás instrucciones para restablecer la contraseña.");
+    } catch (error) {
+      onNotice(error.message || "No se pudo completar la solicitud.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <main className="login-wrap">
+    <section className="login-card">
+      <div className="brand-mark"><Sprout size={30}/></div>
+      <p className="eyebrow">GESTIÓN COMERCIAL</p>
+      <h1>Nica Decants <span>Manager</span></h1>
+      <p className="muted">Ingresa con la cuenta que te haya creado el administrador.</p>
+      <form onSubmit={submit} className="stack">
+        <label>Correo electrónico
+          <input type="email" autoComplete="username" value={email} onChange={e=>setEmail(e.target.value)} required placeholder="tu@correo.com"/>
+        </label>
+        {mode === "login" && <label>Contraseña
+          <input type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)} required/>
+        </label>}
+        <button className="primary" disabled={busy}>{busy ? "Procesando…" : mode === "login" ? "Iniciar sesión" : "Enviar enlace de recuperación"}</button>
+      </form>
+      <button className="text-button" onClick={()=>setMode(mode === "login" ? "reset" : "login")}>
+        {mode === "login" ? "¿Olvidaste tu contraseña?" : "Volver al inicio de sesión"}
+      </button>
+      <p className="small muted"><LockKeyhole size={13}/> Acceso protegido por Supabase Auth y políticas de base de datos.</p>
+    </section>
+  </main>;
+}
+
+function App() {
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [products, setProducts] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [section, setSection] = useState("Inicio");
+  const [search, setSearch] = useState("");
+  const [productFormOpen, setProductFormOpen] = useState(false);
+  const [editingProduct, setEditingProduct] = useState(null);
+  const [customerFormOpen, setCustomerFormOpen] = useState(false);
+  const [editingCustomer, setEditingCustomer] = useState(null);
+  const [savingForm, setSavingForm] = useState(false);
+  const [productForm, setProductForm] = useState({
+    sku: "", name: "", category: "General", kind: "finished",
+    sell_unit: "unidad", low_stock_threshold: "0", sale_price: "0"
+  });
+  const [customerForm, setCustomerForm] = useState({
+    full_name: "", phone: "", email: ""
+  });
+  const [saleCart, setSaleCart] = useState([]);
+  const [selectedSaleProduct, setSelectedSaleProduct] = useState("");
+  const [saleQuantity, setSaleQuantity] = useState("1");
+  const [saleCustomerId, setSaleCustomerId] = useState("");
+  const [saleCustomerName, setSaleCustomerName] = useState("");
+  const [saleCustomerPhone, setSaleCustomerPhone] = useState("");
+  const [saleDiscount, setSaleDiscount] = useState("0");
+  const [salePaymentAmount, setSalePaymentAmount] = useState("0");
+  const [salePaymentMethod, setSalePaymentMethod] = useState("cash");
+  const [salePaymentReference, setSalePaymentReference] = useState("");
+  const [saleNotes, setSaleNotes] = useState("");
+
+
+  const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!supabase) { setLoading(false); return; }
+    let alive = true;
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!alive) return;
+      if (error) setNotice(error.message);
+      setSession(data?.session ?? null);
+      setLoading(false);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      if (!nextSession) { setProfile(null); setProducts([]); setCustomers([]); }
+    });
+    return () => { alive = false; listener.subscription.unsubscribe(); };
+  }, []);
+
+  useEffect(() => {
+    if (!session || !supabase) return;
+    let alive = true;
+    async function load() {
+      setLoading(true);
+      setNotice("");
+      const [profileResult, productResult, customerResult] = await Promise.all([
+        supabase.from("profiles").select("display_name, role, active").eq("user_id", session.user.id).maybeSingle(),
+        supabase.from("products").select("id, sku, name, category, kind, sell_unit, stock_qty, low_stock_threshold, sale_price, active").eq("active", true).order("name"),
+        supabase.from("customers").select("id, full_name, phone, email, active, created_at").eq("active", true).order("full_name")
+      ]);
+      if (!alive) return;
+      if (profileResult.error) setNotice(`No se pudo leer tu perfil: ${profileResult.error.message}`);
+      else if (!profileResult.data || !profileResult.data.active) setNotice("Tu usuario no tiene un perfil activo. Pide al administrador que lo configure.");
+      else setProfile(profileResult.data);
+      if (productResult.error) setNotice(`No se pudieron cargar los productos: ${productResult.error.message}`);
+      else setProducts(productResult.data ?? []);
+      if (customerResult.error) setNotice(`No se pudieron cargar los clientes: ${customerResult.error.message}`);
+      else setCustomers(customerResult.data ?? []);
+      setLoading(false);
+    }
+    load();
+    return () => { alive = false; };
+  }, [session]);
+
+  const filteredProducts = useMemo(() => products.filter(p =>
+    `${p.name} ${p.sku ?? ""} ${p.category ?? ""}`.toLowerCase().includes(search.toLowerCase())
+  ), [products, search]);
+
+
+  function openProductForm(product = null) {
+    setEditingProduct(product);
+    setProductForm(product ? {
+      sku: product.sku || "",
+      name: product.name,
+      category: product.category || "General",
+      kind: product.kind,
+      sell_unit: product.sell_unit || "unidad",
+      low_stock_threshold: String(product.low_stock_threshold ?? 0),
+      sale_price: String(product.sale_price ?? 0)
+    } : {
+      sku: "", name: "", category: "General", kind: "finished",
+      sell_unit: "unidad", low_stock_threshold: "0", sale_price: "0"
+    });
+    setProductFormOpen(true);
+  }
+
+  async function saveProduct(event) {
+    event.preventDefault();
+    if (!supabase || profile?.role !== "admin") {
+      setNotice("Solo un administrador puede guardar productos.");
+      return;
+    }
+    setSavingForm(true);
+    const payload = {
+      sku: productForm.sku.trim() || null,
+      name: productForm.name.trim(),
+      category: productForm.category.trim() || "General",
+      kind: productForm.kind,
+      sell_unit: productForm.sell_unit.trim() || "unidad",
+      low_stock_threshold: Number(productForm.low_stock_threshold),
+      sale_price: Number(productForm.sale_price)
+    };
+    const result = editingProduct
+      ? await supabase.from("products").update(payload).eq("id", editingProduct.id)
+      : await supabase.from("products").insert(payload);
+    setSavingForm(false);
+    if (result.error) {
+      setNotice("No se pudo guardar el producto: " + result.error.message);
+      return;
+    }
+    setProductFormOpen(false);
+    const wasEditing = Boolean(editingProduct);
+    setEditingProduct(null);
+    await refresh();
+    setNotice(wasEditing ? "Producto actualizado." : "Producto agregado.");
+  }
+
+
+  function openCustomerForm(customer = null) {
+    setEditingCustomer(customer);
+    setCustomerForm(customer ? {
+      full_name: customer.full_name,
+      phone: customer.phone || "",
+      email: customer.email || ""
+    } : { full_name: "", phone: "", email: "" });
+    setCustomerFormOpen(true);
+  }
+
+  async function loadCustomers() {
+    const { data, error } = await supabase.from("customers")
+      .select("id, full_name, phone, email, active, created_at")
+      .eq("active", true).order("full_name");
+    if (error) setNotice(error.message);
+    else setCustomers(data ?? []);
+  }
+
+  async function saveCustomer(event) {
+    event.preventDefault();
+    if (!supabase || !session) return;
+    setSavingForm(true);
+    const payload = {
+      full_name: customerForm.full_name.trim(),
+      phone: customerForm.phone.trim() || null,
+      email: customerForm.email.trim() || null
+    };
+    const result = editingCustomer
+      ? await supabase.from("customers").update(payload).eq("id", editingCustomer.id)
+      : await supabase.from("customers").insert({
+          ...payload, created_by: session.user.id
+        });
+    setSavingForm(false);
+    if (result.error) {
+      setNotice("No se pudo guardar el cliente: " + result.error.message);
+      return;
+    }
+    const wasEditing = Boolean(editingCustomer);
+    setCustomerFormOpen(false);
+    setEditingCustomer(null);
+    await loadCustomers();
+    setNotice(wasEditing ? "Cliente actualizado." : "Cliente agregado.");
+  }
+
+  const saleSubtotal = saleCart.reduce(
+    (sum, item) => sum + Number(item.quantity) * Number(item.unit_price), 0
+  );
+  const saleTotal = Math.max(0, saleSubtotal - Number(saleDiscount || 0));
+
+  function addSaleItem() {
+    const product = products.find(p => p.id === selectedSaleProduct);
+    const quantity = Number(saleQuantity);
+    if (!product) {
+      setNotice("Selecciona un producto para agregar.");
+      return;
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setNotice("Ingresa una cantidad mayor que cero.");
+      return;
+    }
+    const current = saleCart.find(item => item.product_id === product.id);
+    const combinedQuantity = quantity + Number(current?.quantity || 0);
+    if (combinedQuantity > Number(product.stock_qty)) {
+      setNotice(`Existencias insuficientes de ${product.name}. Disponible: ${product.stock_qty}.`);
+      return;
+    }
+    setSaleCart(previous => {
+      const existing = previous.find(item => item.product_id === product.id);
+      if (existing) {
+        return previous.map(item => item.product_id === product.id
+          ? { ...item, quantity: Number(item.quantity) + quantity }
+          : item);
+      }
+      return [...previous, {
+        product_id: product.id,
+        name: product.name,
+        quantity,
+        unit_price: Number(product.sale_price),
+        stock_qty: Number(product.stock_qty),
+        sell_unit: product.sell_unit || "unidad"
+      }];
+    });
+    setNotice("");
+    setSaleQuantity("1");
+  }
+
+  async function saveSale(event) {
+    event.preventDefault();
+    if (!supabase || !session) {
+      setNotice("No hay una sesión activa. Inicia sesión nuevamente.");
+      return;
+    }
+    if (!saleCart.length) {
+      setNotice("Agrega al menos un producto a la venta.");
+      return;
+    }
+    const discount = Number(saleDiscount || 0);
+    const payment = Number(salePaymentAmount || 0);
+    if (!Number.isFinite(discount) || discount < 0 || discount > saleSubtotal) {
+      setNotice("El descuento debe estar entre cero y el subtotal.");
+      return;
+    }
+    if (!Number.isFinite(payment) || payment < 0 || payment > saleTotal) {
+      setNotice("El pago debe estar entre cero y el total de la venta.");
+      return;
+    }
+
+    setSavingForm(true);
+    setNotice("");
+    try {
+      const { data, error } = await supabase.rpc("create_sale", {
+        p_items: saleCart.map(item => ({
+          product_id: item.product_id,
+          quantity: Number(item.quantity)
+        })),
+        p_customer_id: saleCustomerId || null,
+        p_customer_name: saleCustomerName.trim() || "Cliente general",
+        p_customer_phone: saleCustomerPhone.trim() || null,
+        p_discount: discount,
+        p_payment_amount: payment,
+        p_payment_method: salePaymentMethod,
+        p_payment_reference: salePaymentReference.trim() || null,
+        p_notes: saleNotes.trim() || null
+      });
+      if (error) throw error;
+      if (data?.success === false) {
+        throw new Error(data.message || "La base de datos no confirmó la venta.");
+      }
+
+      const invoice = data?.invoice ||
+        `${data?.invoice_series || "ND"}-${String(data?.invoice_number || "").padStart(4, "0")}`;
+      setSaleCart([]);
+      setSelectedSaleProduct("");
+      setSaleQuantity("1");
+      setSaleCustomerId("");
+      setSaleCustomerName("");
+      setSaleCustomerPhone("");
+      setSaleDiscount("0");
+      setSalePaymentAmount("0");
+      setSalePaymentMethod("cash");
+      setSalePaymentReference("");
+      setSaleNotes("");
+      await refresh();
+      setNotice(`Venta registrada correctamente: ${invoice}. Total: ${money(data?.total ?? saleTotal)}.`);
+    } catch (error) {
+      setNotice("No se pudo registrar la venta: " + (error?.message || "Error desconocido."));
+    } finally {
+      setSavingForm(false);
+    }
+  }
+
+  function removeSaleItem(productId) {
+    setSaleCart(previous => previous.filter(item => item.product_id !== productId));
+  }
+
+  async function refresh() {
+    if (!supabase || !session) return;
+    const { data, error } = await supabase.from("products")
+      .select("id, sku, name, category, kind, sell_unit, stock_qty, low_stock_threshold, sale_price, active")
+      .eq("active", true).order("name");
+    if (error) setNotice(error.message);
+    else { setProducts(data ?? []); setNotice("Inventario actualizado."); }
+  }
+
+  async function signOut() {
+    const { error } = await supabase.auth.signOut();
+    if (error) setNotice(error.message);
+  }
+
+  if (!isSupabaseConfigured) return <main className="setup-wrap">
+    <section className="setup-card">
+      <div className="brand-mark"><Sprout size={30}/></div>
+      <p className="eyebrow">CONFIGURACIÓN INICIAL</p>
+      <h1>Conecta tu proyecto Supabase</h1>
+      <p>La aplicación está lista para recibir las credenciales públicas del proyecto. Todavía no se conectará hasta que completes el archivo <code>.env.local</code>.</p>
+      <ol>
+        <li>Crea el proyecto en Supabase.</li>
+        <li>Abre Project Settings → API (o Connect) y copia la Project URL y la publishable/anon key.</li>
+        <li>Crea <code>.env.local</code> basándote en <code>.env.example</code>.</li>
+        <li>Reinicia el servidor de desarrollo o vuelve a desplegar.</li>
+      </ol>
+      <div className="warning"><ShieldCheck size={18}/> Usa solo la clave publicable/anon en el navegador. Nunca copies una clave <code>service_role</code> aquí.</div>
+    </section>
+  </main>;
+
+  if (loading && !session) return <div className="center-state">Cargando…</div>;
+  if (!session) return <Login onNotice={setNotice}/>;
+
+  const isAdmin = profile?.role === "admin";
+  const nav = [
+    ["Inicio", LayoutDashboard],
+    ["Inventario", Package],
+    ["Clientes", Users],
+    ["Ventas", ReceiptText],
+    ...(isAdmin ? [["Finanzas", Wallet]] : [])
+  ];
+
+  return <div className="app-shell">
+    <aside className="sidebar">
+      <div className="brand"><div className="brand-mark small-mark"><Sprout size={22}/></div><div><strong>Nica Decants</strong><small>MANAGER</small></div></div>
+      <nav>{nav.map(([name, Icon]) => <button key={name} className={section===name ? "nav-item selected" : "nav-item"} onClick={()=>setSection(name)}><Icon size={18}/>{name}</button>)}</nav>
+      <div className="side-bottom"><ShieldCheck size={17}/><span>{isAdmin ? "Administrador" : "Empleado"}<small>Permisos según tu rol</small></span></div>
+    </aside>
+    <main className="main-area">
+      <header className="topbar">
+        <div><p className="eyebrow">NICA DECANTS / OPERACIONES</p><h1>{section}</h1></div>
+        <div className="user-area"><span className="user-name">{profile?.display_name || session.user.email}</span><button className="icon-button" title="Cerrar sesión" onClick={signOut}><LogOut size={18}/></button></div>
+      </header>
+      {notice && <div className="notice" role="status">{notice}<button onClick={()=>setNotice("")}>Cerrar</button></div>}
+      {loading && <p className="muted">Sincronizando con la base de datos…</p>}
+      {section === "Inicio" && <section className="content">
+        <div className="welcome"><div><p className="eyebrow light">PANEL DE CONTROL</p><h2>Bienvenido a tu negocio</h2><p>Consulta inventario y clientes desde un solo lugar.</p></div><Sprout size={52}/></div>
+        <div className="metric-grid">
+          <Metric icon={<Package/>} label="Productos activos" value={String(products.length)} />
+          <Metric icon={<AlertTriangle/>} label="Alertas de inventario" value={String(products.filter(p=>Number(p.stock_qty)<=Number(p.low_stock_threshold)).length)} />
+          <Metric icon={<Users/>} label="Clientes activos" value={String(customers.length)} />
+          {isAdmin && <Metric icon={<ShieldCheck/>} label="Rol de acceso" value="Administrador"/>}
+        </div>
+        <div className="panel"><div className="panel-heading"><div><h3>Existencias bajas</h3><p className="muted">Productos que alcanzaron el umbral configurado.</p></div><button className="secondary" onClick={()=>setSection("Inventario")}>Ver inventario</button></div>
+          <ProductTable products={products.filter(p=>Number(p.stock_qty)<=Number(p.low_stock_threshold)).slice(0,6)} empty="No hay alertas de stock bajo."/>
+        </div>
+      </section>}
+      {section === "Inventario" && <section className="content">
+        <div className="panel"><div className="panel-heading"><div><h3>Productos</h3><p className="muted">Los costos no se consultan ni se muestran en esta pantalla.</p></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="secondary" onClick={refresh}>Actualizar</button>{isAdmin && <button onClick={() => openProductForm()}>Agregar producto</button>}</div></div>
+          {productFormOpen && isAdmin && <form onSubmit={saveProduct} style={{display:"grid",gap:12,padding:"16px 0"}}>
+            <h3>{editingProduct ? "Editar producto" : "Nuevo producto"}</h3>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12}}>
+              <label>Nombre *<input required value={productForm.name} onChange={e=>setProductForm({...productForm,name:e.target.value})}/></label>
+              <label>SKU<input value={productForm.sku} onChange={e=>setProductForm({...productForm,sku:e.target.value})}/></label>
+              <label>Categoría<input value={productForm.category} onChange={e=>setProductForm({...productForm,category:e.target.value})}/></label>
+              <label>Tipo<select value={productForm.kind} onChange={e=>setProductForm({...productForm,kind:e.target.value})}><option value="finished">Producto terminado</option><option value="supply">Suministro</option><option value="source_perfume">Perfume original</option></select></label>
+              <label>Unidad de venta<input required value={productForm.sell_unit} onChange={e=>setProductForm({...productForm,sell_unit:e.target.value})}/></label>
+              <label>Stock mínimo<input type="number" min="0" step="0.001" required value={productForm.low_stock_threshold} onChange={e=>setProductForm({...productForm,low_stock_threshold:e.target.value})}/></label>
+              <label>Precio de venta<input type="number" min="0" step="0.01" required value={productForm.sale_price} onChange={e=>setProductForm({...productForm,sale_price:e.target.value})}/></label>
+            </div>
+            <p className="muted">Las existencias se mantendrán en cero hasta habilitar los movimientos de inventario.</p>
+            <div style={{display:"flex",gap:8}}><button type="submit" disabled={savingForm}>{savingForm ? "Guardando..." : "Guardar producto"}</button><button type="button" className="secondary" onClick={()=>setProductFormOpen(false)}>Cancelar</button></div>
+          </form>}
+          <div className="search-box"><Search size={17}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar nombre, SKU o categoría"/></div>
+          <ProductTable products={filteredProducts} empty="No hay productos para mostrar." onEdit={isAdmin ? openProductForm : null}/>
+        </div>
+        <div className="hint"><LockKeyhole size={17}/><span>El alta y modificación de productos se habilitarán mediante funciones de administrador. No se permite editar el inventario directamente desde el navegador.</span></div>
+      </section>}
+      {section === "Clientes" && <section className="content"><div className="panel"><div className="panel-heading"><div><h3>Clientes</h3><p className="muted">Información de contacto cargada desde Supabase.</p></div><div style={{display:"flex",gap:8,alignItems:"center"}}><span className="pill">{customers.length} clientes</span><button onClick={() => openCustomerForm()}>Agregar cliente</button></div></div>
+        {customerFormOpen && <form onSubmit={saveCustomer} style={{display:"grid",gap:12,padding:"16px 0"}}>
+          <h3>{editingCustomer ? "Editar cliente" : "Nuevo cliente"}</h3>
+          <label>Nombre completo *<input required value={customerForm.full_name} onChange={e=>setCustomerForm({...customerForm,full_name:e.target.value})}/></label>
+          <label>Teléfono<input value={customerForm.phone} onChange={e=>setCustomerForm({...customerForm,phone:e.target.value})}/></label>
+          <label>Correo electrónico<input type="email" value={customerForm.email} onChange={e=>setCustomerForm({...customerForm,email:e.target.value})}/></label>
+          <div style={{display:"flex",gap:8}}><button type="submit" disabled={savingForm}>{savingForm ? "Guardando..." : "Guardar cliente"}</button><button type="button" className="secondary" onClick={()=>setCustomerFormOpen(false)}>Cancelar</button></div>
+        </form>}
+        {customers.length ? <div className="table-wrap"><table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Correo</th><th>Acciones</th></tr></thead><tbody>{customers.map(c=><tr key={c.id}><td>{c.full_name}</td><td>{c.phone || "—"}</td><td>{c.email || "—"}</td><td><button className="secondary" onClick={()=>openCustomerForm(c)}>Editar</button></td></tr>)}</tbody></table></div> : <Empty text="Todavía no hay clientes. Puedes agregar el primero con el botón de arriba."/>}
+      </div></section>}
+      {section === "Ventas" && <section className="content">
+        <div className="panel">
+          <div className="panel-heading">
+            <div><h3>Nueva venta</h3><p className="muted">El inventario se actualizará al confirmar la venta.</p></div>
+            <span className="pill">{saleCart.length} productos</span>
+          </div>
+          <form onSubmit={saveSale} style={{display:"grid",gap:16}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12}}>
+              <label>Producto
+                <select value={selectedSaleProduct} onChange={e=>setSelectedSaleProduct(e.target.value)} required>
+                  <option value="">Seleccionar producto...</option>
+                  {products.filter(p=>p.active && Number(p.stock_qty)>0).map(p=><option key={p.id} value={p.id}>{p.name} — Stock: {p.stock_qty} {p.sell_unit} — {money(p.sale_price)}</option>)}
+                </select>
+              </label>
+              <label>Cantidad
+                <input type="number" min="0.001" step="0.001" value={saleQuantity} onChange={e=>setSaleQuantity(e.target.value)} required/>
+              </label>
+              <div style={{display:"flex",alignItems:"end"}}>
+                <button type="button" onClick={addSaleItem}>Agregar al carrito</button>
+              </div>
+            </div>
+
+            {saleCart.length ? <div className="table-wrap"><table>
+              <thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Importe</th><th>Acción</th></tr></thead>
+              <tbody>{saleCart.map(item=><tr key={item.product_id}>
+                <td>{item.name}</td>
+                <td>{item.quantity} {item.sell_unit}</td>
+                <td>{money(item.unit_price)}</td>
+                <td>{money(Number(item.quantity)*Number(item.unit_price))}</td>
+                <td><button type="button" className="secondary" onClick={()=>removeSaleItem(item.product_id)}>Quitar</button></td>
+              </tr>)}</tbody>
+            </table></div> : <p className="muted">El carrito está vacío. Agrega un producto para comenzar.</p>}
+
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12}}>
+              <label>Cliente
+                <select value={saleCustomerId} onChange={e=>setSaleCustomerId(e.target.value)}>
+                  <option value="">Cliente general</option>
+                  {customers.map(c=><option key={c.id} value={c.id}>{c.full_name}</option>)}
+                </select>
+              </label>
+              {!saleCustomerId && <>
+                <label>Nombre del cliente (opcional)
+                  <input value={saleCustomerName} onChange={e=>setSaleCustomerName(e.target.value)} placeholder="Cliente general"/>
+                </label>
+                <label>Teléfono (opcional)
+                  <input value={saleCustomerPhone} onChange={e=>setSaleCustomerPhone(e.target.value)}/>
+                </label>
+              </>}
+              <label>Descuento (C$)
+                <input type="number" min="0" max={saleSubtotal} step="0.01" value={saleDiscount} onChange={e=>setSaleDiscount(e.target.value)} required/>
+              </label>
+              <label>Pago recibido (C$)
+                <input type="number" min="0" max={saleTotal} step="0.01" value={salePaymentAmount} onChange={e=>setSalePaymentAmount(e.target.value)} required/>
+              </label>
+              <label>Método de pago
+                <select value={salePaymentMethod} onChange={e=>setSalePaymentMethod(e.target.value)}>
+                  <option value="cash">Efectivo</option>
+                  <option value="transfer">Transferencia</option>
+                  <option value="card">Tarjeta</option>
+                  <option value="other">Otro</option>
+                </select>
+              </label>
+              <label>Referencia del pago (opcional)
+                <input value={salePaymentReference} onChange={e=>setSalePaymentReference(e.target.value)}/>
+              </label>
+            </div>
+            <label>Notas (opcional)
+              <textarea value={saleNotes} onChange={e=>setSaleNotes(e.target.value)} rows="2"/>
+            </label>
+
+            <div style={{marginLeft:"auto",minWidth:240,display:"grid",gap:8,textAlign:"right"}}>
+              <div>Subtotal: <strong>{money(saleSubtotal)}</strong></div>
+              <div>Descuento: <strong>{money(saleDiscount)}</strong></div>
+              <div style={{fontSize:20}}>Total: <strong>{money(saleTotal)}</strong></div>
+              <div className="muted">Saldo pendiente: {money(Math.max(0,saleTotal-Number(salePaymentAmount||0)))}</div>
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button type="submit" disabled={savingForm || !saleCart.length}>{savingForm ? "Registrando..." : "Confirmar venta"}</button>
+              <button type="button" className="secondary" disabled={savingForm} onClick={()=>{setSaleCart([]);setSaleDiscount("0");setSalePaymentAmount("0");setNotice("Carrito vaciado.");}}>Vaciar carrito</button>
+            </div>
+          </form>
+        </div>
+      </section>}
+      {section === "Finanzas" && isAdmin && <section className="content"><div className="panel"><div className="empty-state"><Wallet size={34}/><h3>Finanzas</h3><p>El módulo financiero se conectará cuando estén listas las funciones seguras de pagos, gastos y costos. No se muestran cifras inventadas.</p></div></div></section>}
+      <footer>Los datos se consultan desde Supabase. Las ventas se procesan mediante una operación transaccional.</footer>
+    </main>
+  </div>;
+}
+
+function Metric({icon,label,value}) {
+  return <div className="metric"><div className="metric-icon">{icon}</div><p>{label}</p><strong>{value}</strong></div>;
+}
+function ProductTable({products,empty,onEdit=null}) {
+  if (!products.length) return <Empty text={empty}/>;
+  return <div className="table-wrap"><table><thead><tr><th>Producto</th><th>Categoría</th><th>Tipo</th><th>Existencias</th><th>Precio de venta</th>{onEdit && <th>Acciones</th>}</tr></thead><tbody>{products.map(p=><tr key={p.id}><td><strong>{p.name}</strong><small>{p.sku || "Sin SKU"}</small></td><td>{p.category}</td><td>{({finished:"Producto terminado",supply:"Suministro",source_perfume:"Perfume original"})[p.kind] || p.kind}</td><td><span className={Number(p.stock_qty)<=Number(p.low_stock_threshold)?"stock low":"stock"}>{p.stock_qty} {p.sell_unit}</span></td><td>{money(p.sale_price)}</td>{onEdit && <td><button className="secondary" onClick={()=>onEdit(p)}>Editar</button></td>}</tr>)}</tbody></table></div>;
+}
+function Empty({text}) { return <div className="empty-state"><Package size={28}/><p>{text}</p></div>; }
+
+export default App;

@@ -1,0 +1,337 @@
+import React from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Sprout, LayoutDashboard, Package, Users, ReceiptText, Wallet,
+  LogOut, Search, AlertTriangle, RefreshCw, ShieldCheck, LockKeyhole
+} from "lucide-react";
+import { isSupabaseConfigured, supabase } from "./supabase";
+const money = (value) => new Intl.NumberFormat("es-NI", {
+  style: "currency", currency: "NIO", maximumFractionDigits: 2
+}).format(Number(value || 0));
+
+function Login({ onNotice }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState("login");
+
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true);
+    onNotice("");
+    try {
+      const result = mode === "login"
+        ? await supabase.auth.signInWithPassword({ email, password })
+        : await supabase.auth.resetPasswordForEmail(email);
+      if (result.error) throw result.error;
+      onNotice(mode === "login"
+        ? "Sesión iniciada."
+        : "Si el correo está registrado, recibirás instrucciones para restablecer la contraseña.");
+    } catch (error) {
+      onNotice(error.message || "No se pudo completar la solicitud.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <main className="login-wrap">
+    <section className="login-card">
+      <div className="brand-mark"><Sprout size={30}/></div>
+      <p className="eyebrow">GESTIÓN COMERCIAL</p>
+      <h1>Nica Decants <span>Manager</span></h1>
+      <p className="muted">Ingresa con la cuenta que te haya creado el administrador.</p>
+      <form onSubmit={submit} className="stack">
+        <label>Correo electrónico
+          <input type="email" autoComplete="username" value={email} onChange={e=>setEmail(e.target.value)} required placeholder="tu@correo.com"/>
+        </label>
+        {mode === "login" && <label>Contraseña
+          <input type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)} required/>
+        </label>}
+        <button className="primary" disabled={busy}>{busy ? "Procesando…" : mode === "login" ? "Iniciar sesión" : "Enviar enlace de recuperación"}</button>
+      </form>
+      <button className="text-button" onClick={()=>setMode(mode === "login" ? "reset" : "login")}>
+        {mode === "login" ? "¿Olvidaste tu contraseña?" : "Volver al inicio de sesión"}
+      </button>
+      <p className="small muted"><LockKeyhole size={13}/> Acceso protegido por Supabase Auth y políticas de base de datos.</p>
+    </section>
+  </main>;
+}
+
+function App() {
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [products, setProducts] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [section, setSection] = useState("Inicio");
+  const [search, setSearch] = useState("");
+  const [productFormOpen, setProductFormOpen] = useState(false);
+  const [editingProduct, setEditingProduct] = useState(null);
+  const [customerFormOpen, setCustomerFormOpen] = useState(false);
+  const [editingCustomer, setEditingCustomer] = useState(null);
+  const [savingForm, setSavingForm] = useState(false);
+  const [productForm, setProductForm] = useState({
+    sku: "", name: "", category: "General", kind: "finished",
+    sell_unit: "unidad", low_stock_threshold: "0", sale_price: "0"
+  });
+  const [customerForm, setCustomerForm] = useState({
+    full_name: "", phone: "", email: ""
+  });
+
+
+  const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!supabase) { setLoading(false); return; }
+    let alive = true;
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!alive) return;
+      if (error) setNotice(error.message);
+      setSession(data?.session ?? null);
+      setLoading(false);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      if (!nextSession) { setProfile(null); setProducts([]); setCustomers([]); }
+    });
+    return () => { alive = false; listener.subscription.unsubscribe(); };
+  }, []);
+
+  useEffect(() => {
+    if (!session || !supabase) return;
+    let alive = true;
+    async function load() {
+      setLoading(true);
+      setNotice("");
+      const [profileResult, productResult, customerResult] = await Promise.all([
+        supabase.from("profiles").select("display_name, role, active").eq("user_id", session.user.id).maybeSingle(),
+        supabase.from("products").select("id, sku, name, category, kind, sell_unit, stock_qty, low_stock_threshold, sale_price, active").eq("active", true).order("name"),
+        supabase.from("customers").select("id, full_name, phone, email, active, created_at").eq("active", true).order("full_name")
+      ]);
+      if (!alive) return;
+      if (profileResult.error) setNotice(`No se pudo leer tu perfil: ${profileResult.error.message}`);
+      else if (!profileResult.data || !profileResult.data.active) setNotice("Tu usuario no tiene un perfil activo. Pide al administrador que lo configure.");
+      else setProfile(profileResult.data);
+      if (productResult.error) setNotice(`No se pudieron cargar los productos: ${productResult.error.message}`);
+      else setProducts(productResult.data ?? []);
+      if (customerResult.error) setNotice(`No se pudieron cargar los clientes: ${customerResult.error.message}`);
+      else setCustomers(customerResult.data ?? []);
+      setLoading(false);
+    }
+    load();
+    return () => { alive = false; };
+  }, [session]);
+
+  const filteredProducts = useMemo(() => products.filter(p =>
+    `${p.name} ${p.sku ?? ""} ${p.category ?? ""}`.toLowerCase().includes(search.toLowerCase())
+  ), [products, search]);
+
+
+  function openProductForm(product = null) {
+    setEditingProduct(product);
+    setProductForm(product ? {
+      sku: product.sku || "",
+      name: product.name,
+      category: product.category || "General",
+      kind: product.kind,
+      sell_unit: product.sell_unit || "unidad",
+      low_stock_threshold: String(product.low_stock_threshold ?? 0),
+      sale_price: String(product.sale_price ?? 0)
+    } : {
+      sku: "", name: "", category: "General", kind: "finished",
+      sell_unit: "unidad", low_stock_threshold: "0", sale_price: "0"
+    });
+    setProductFormOpen(true);
+  }
+
+  async function saveProduct(event) {
+    event.preventDefault();
+    if (!supabase || profile?.role !== "admin") {
+      setNotice("Solo un administrador puede guardar productos.");
+      return;
+    }
+    setSavingForm(true);
+    const payload = {
+      sku: productForm.sku.trim() || null,
+      name: productForm.name.trim(),
+      category: productForm.category.trim() || "General",
+      kind: productForm.kind,
+      sell_unit: productForm.sell_unit.trim() || "unidad",
+      low_stock_threshold: Number(productForm.low_stock_threshold),
+      sale_price: Number(productForm.sale_price)
+    };
+    const result = editingProduct
+      ? await supabase.from("products").update(payload).eq("id", editingProduct.id)
+      : await supabase.from("products").insert(payload);
+    setSavingForm(false);
+    if (result.error) {
+      setNotice("No se pudo guardar el producto: " + result.error.message);
+      return;
+    }
+    setProductFormOpen(false);
+    const wasEditing = Boolean(editingProduct);
+    setEditingProduct(null);
+    await refresh();
+    setNotice(wasEditing ? "Producto actualizado." : "Producto agregado.");
+  }
+
+
+  function openCustomerForm(customer = null) {
+    setEditingCustomer(customer);
+    setCustomerForm(customer ? {
+      full_name: customer.full_name,
+      phone: customer.phone || "",
+      email: customer.email || ""
+    } : { full_name: "", phone: "", email: "" });
+    setCustomerFormOpen(true);
+  }
+
+  async function loadCustomers() {
+    const { data, error } = await supabase.from("customers")
+      .select("id, full_name, phone, email, active, created_at")
+      .eq("active", true).order("full_name");
+    if (error) setNotice(error.message);
+    else setCustomers(data ?? []);
+  }
+
+  async function saveCustomer(event) {
+    event.preventDefault();
+    if (!supabase || !session) return;
+    setSavingForm(true);
+    const payload = {
+      full_name: customerForm.full_name.trim(),
+      phone: customerForm.phone.trim() || null,
+      email: customerForm.email.trim() || null
+    };
+    const result = editingCustomer
+      ? await supabase.from("customers").update(payload).eq("id", editingCustomer.id)
+      : await supabase.from("customers").insert({
+          ...payload, created_by: session.user.id
+        });
+    setSavingForm(false);
+    if (result.error) {
+      setNotice("No se pudo guardar el cliente: " + result.error.message);
+      return;
+    }
+    const wasEditing = Boolean(editingCustomer);
+    setCustomerFormOpen(false);
+    setEditingCustomer(null);
+    await loadCustomers();
+    setNotice(wasEditing ? "Cliente actualizado." : "Cliente agregado.");
+  }
+
+  async function refresh() {
+    if (!supabase || !session) return;
+    const { data, error } = await supabase.from("products")
+      .select("id, sku, name, category, kind, sell_unit, stock_qty, low_stock_threshold, sale_price, active")
+      .eq("active", true).order("name");
+    if (error) setNotice(error.message);
+    else { setProducts(data ?? []); setNotice("Inventario actualizado."); }
+  }
+
+  async function signOut() {
+    const { error } = await supabase.auth.signOut();
+    if (error) setNotice(error.message);
+  }
+
+  if (!isSupabaseConfigured) return <main className="setup-wrap">
+    <section className="setup-card">
+      <div className="brand-mark"><Sprout size={30}/></div>
+      <p className="eyebrow">CONFIGURACIÓN INICIAL</p>
+      <h1>Conecta tu proyecto Supabase</h1>
+      <p>La aplicación está lista para recibir las credenciales públicas del proyecto. Todavía no se conectará hasta que completes el archivo <code>.env.local</code>.</p>
+      <ol>
+        <li>Crea el proyecto en Supabase.</li>
+        <li>Abre Project Settings → API (o Connect) y copia la Project URL y la publishable/anon key.</li>
+        <li>Crea <code>.env.local</code> basándote en <code>.env.example</code>.</li>
+        <li>Reinicia el servidor de desarrollo o vuelve a desplegar.</li>
+      </ol>
+      <div className="warning"><ShieldCheck size={18}/> Usa solo la clave publicable/anon en el navegador. Nunca copies una clave <code>service_role</code> aquí.</div>
+    </section>
+  </main>;
+
+  if (loading && !session) return <div className="center-state">Cargando…</div>;
+  if (!session) return <Login onNotice={setNotice}/>;
+
+  const isAdmin = profile?.role === "admin";
+  const nav = [
+    ["Inicio", LayoutDashboard],
+    ["Inventario", Package],
+    ["Clientes", Users],
+    ["Ventas", ReceiptText],
+    ...(isAdmin ? [["Finanzas", Wallet]] : [])
+  ];
+
+  return <div className="app-shell">
+    <aside className="sidebar">
+      <div className="brand"><div className="brand-mark small-mark"><Sprout size={22}/></div><div><strong>Nica Decants</strong><small>MANAGER</small></div></div>
+      <nav>{nav.map(([name, Icon]) => <button key={name} className={section===name ? "nav-item selected" : "nav-item"} onClick={()=>setSection(name)}><Icon size={18}/>{name}</button>)}</nav>
+      <div className="side-bottom"><ShieldCheck size={17}/><span>{isAdmin ? "Administrador" : "Empleado"}<small>Permisos según tu rol</small></span></div>
+    </aside>
+    <main className="main-area">
+      <header className="topbar">
+        <div><p className="eyebrow">NICA DECANTS / OPERACIONES</p><h1>{section}</h1></div>
+        <div className="user-area"><span className="user-name">{profile?.display_name || session.user.email}</span><button className="icon-button" title="Cerrar sesión" onClick={signOut}><LogOut size={18}/></button></div>
+      </header>
+      {notice && <div className="notice" role="status">{notice}<button onClick={()=>setNotice("")}>Cerrar</button></div>}
+      {loading && <p className="muted">Sincronizando con la base de datos…</p>}
+      {section === "Inicio" && <section className="content">
+        <div className="welcome"><div><p className="eyebrow light">PANEL DE CONTROL</p><h2>Bienvenido a tu negocio</h2><p>Consulta inventario y clientes desde un solo lugar.</p></div><Sprout size={52}/></div>
+        <div className="metric-grid">
+          <Metric icon={<Package/>} label="Productos activos" value={String(products.length)} />
+          <Metric icon={<AlertTriangle/>} label="Alertas de inventario" value={String(products.filter(p=>Number(p.stock_qty)<=Number(p.low_stock_threshold)).length)} />
+          <Metric icon={<Users/>} label="Clientes activos" value={String(customers.length)} />
+          {isAdmin && <Metric icon={<ShieldCheck/>} label="Rol de acceso" value="Administrador"/>}
+        </div>
+        <div className="panel"><div className="panel-heading"><div><h3>Existencias bajas</h3><p className="muted">Productos que alcanzaron el umbral configurado.</p></div><button className="secondary" onClick={()=>setSection("Inventario")}>Ver inventario</button></div>
+          <ProductTable products={products.filter(p=>Number(p.stock_qty)<=Number(p.low_stock_threshold)).slice(0,6)} empty="No hay alertas de stock bajo."/>
+        </div>
+      </section>}
+      {section === "Inventario" && <section className="content">
+        <div className="panel"><div className="panel-heading"><div><h3>Productos</h3><p className="muted">Los costos no se consultan ni se muestran en esta pantalla.</p></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="secondary" onClick={refresh}>Actualizar</button>{isAdmin && <button onClick={() => openProductForm()}>Agregar producto</button>}</div></div>
+          {productFormOpen && isAdmin && <form onSubmit={saveProduct} style={{display:"grid",gap:12,padding:"16px 0"}}>
+            <h3>{editingProduct ? "Editar producto" : "Nuevo producto"}</h3>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12}}>
+              <label>Nombre *<input required value={productForm.name} onChange={e=>setProductForm({...productForm,name:e.target.value})}/></label>
+              <label>SKU<input value={productForm.sku} onChange={e=>setProductForm({...productForm,sku:e.target.value})}/></label>
+              <label>Categoría<input value={productForm.category} onChange={e=>setProductForm({...productForm,category:e.target.value})}/></label>
+              <label>Tipo<select value={productForm.kind} onChange={e=>setProductForm({...productForm,kind:e.target.value})}><option value="finished">Producto terminado</option><option value="supply">Suministro</option><option value="source_perfume">Perfume original</option></select></label>
+              <label>Unidad de venta<input required value={productForm.sell_unit} onChange={e=>setProductForm({...productForm,sell_unit:e.target.value})}/></label>
+              <label>Stock mínimo<input type="number" min="0" step="0.001" required value={productForm.low_stock_threshold} onChange={e=>setProductForm({...productForm,low_stock_threshold:e.target.value})}/></label>
+              <label>Precio de venta<input type="number" min="0" step="0.01" required value={productForm.sale_price} onChange={e=>setProductForm({...productForm,sale_price:e.target.value})}/></label>
+            </div>
+            <p className="muted">Las existencias se mantendrán en cero hasta habilitar los movimientos de inventario.</p>
+            <div style={{display:"flex",gap:8}}><button type="submit" disabled={savingForm}>{savingForm ? "Guardando..." : "Guardar producto"}</button><button type="button" className="secondary" onClick={()=>setProductFormOpen(false)}>Cancelar</button></div>
+          </form>}
+          <div className="search-box"><Search size={17}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar nombre, SKU o categoría"/></div>
+          <ProductTable products={filteredProducts} empty="No hay productos para mostrar." onEdit={isAdmin ? openProductForm : null}/>
+        </div>
+        <div className="hint"><LockKeyhole size={17}/><span>El alta y modificación de productos se habilitarán mediante funciones de administrador. No se permite editar el inventario directamente desde el navegador.</span></div>
+      </section>}
+      {section === "Clientes" && <section className="content"><div className="panel"><div className="panel-heading"><div><h3>Clientes</h3><p className="muted">Información de contacto cargada desde Supabase.</p></div><div style={{display:"flex",gap:8,alignItems:"center"}}><span className="pill">{customers.length} clientes</span><button onClick={() => openCustomerForm()}>Agregar cliente</button></div></div>
+        {customerFormOpen && <form onSubmit={saveCustomer} style={{display:"grid",gap:12,padding:"16px 0"}}>
+          <h3>{editingCustomer ? "Editar cliente" : "Nuevo cliente"}</h3>
+          <label>Nombre completo *<input required value={customerForm.full_name} onChange={e=>setCustomerForm({...customerForm,full_name:e.target.value})}/></label>
+          <label>Teléfono<input value={customerForm.phone} onChange={e=>setCustomerForm({...customerForm,phone:e.target.value})}/></label>
+          <label>Correo electrónico<input type="email" value={customerForm.email} onChange={e=>setCustomerForm({...customerForm,email:e.target.value})}/></label>
+          <div style={{display:"flex",gap:8}}><button type="submit" disabled={savingForm}>{savingForm ? "Guardando..." : "Guardar cliente"}</button><button type="button" className="secondary" onClick={()=>setCustomerFormOpen(false)}>Cancelar</button></div>
+        </form>}
+        {customers.length ? <div className="table-wrap"><table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Correo</th><th>Acciones</th></tr></thead><tbody>{customers.map(c=><tr key={c.id}><td>{c.full_name}</td><td>{c.phone || "—"}</td><td>{c.email || "—"}</td><td><button className="secondary" onClick={()=>openCustomerForm(c)}>Editar</button></td></tr>)}</tbody></table></div> : <Empty text="Todavía no hay clientes. Puedes agregar el primero con el botón de arriba."/>}
+      </div></section>}
+      {section === "Ventas" && <section className="content"><div className="panel"><div className="empty-state"><ReceiptText size={34}/><h3>Registro de ventas</h3><p>La escritura de ventas está bloqueada hasta instalar la función transaccional que valida existencias, genera el número de factura, registra los pagos y actualiza el inventario como una sola operación.</p><span className="pill warning-pill">Pendiente de habilitar de forma segura</span></div></div></section>}
+      {section === "Finanzas" && isAdmin && <section className="content"><div className="panel"><div className="empty-state"><Wallet size={34}/><h3>Finanzas</h3><p>El módulo financiero se conectará cuando estén listas las funciones seguras de pagos, gastos y costos. No se muestran cifras inventadas.</p></div></div></section>}
+      <footer>Los datos se consultan desde Supabase. Las operaciones de escritura aún no están habilitadas.</footer>
+    </main>
+  </div>;
+}
+
+function Metric({icon,label,value}) {
+  return <div className="metric"><div className="metric-icon">{icon}</div><p>{label}</p><strong>{value}</strong></div>;
+}
+function ProductTable({products,empty,onEdit=null}) {
+  if (!products.length) return <Empty text={empty}/>;
+  return <div className="table-wrap"><table><thead><tr><th>Producto</th><th>Categoría</th><th>Tipo</th><th>Existencias</th><th>Precio de venta</th>{onEdit && <th>Acciones</th>}</tr></thead><tbody>{products.map(p=><tr key={p.id}><td><strong>{p.name}</strong><small>{p.sku || "Sin SKU"}</small></td><td>{p.category}</td><td>{({finished:"Producto terminado",supply:"Suministro",source_perfume:"Perfume original"})[p.kind] || p.kind}</td><td><span className={Number(p.stock_qty)<=Number(p.low_stock_threshold)?"stock low":"stock"}>{p.stock_qty} {p.sell_unit}</span></td><td>{money(p.sale_price)}</td>{onEdit && <td><button className="secondary" onClick={()=>onEdit(p)}>Editar</button></td>}</tr>)}</tbody></table></div>;
+}
+function Empty({text}) { return <div className="empty-state"><Package size={28}/><p>{text}</p></div>; }
+
+export default App;
