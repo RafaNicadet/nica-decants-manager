@@ -791,6 +791,13 @@ function openCustomerForm(customer = null) {
       setNotice("Agrega al menos un producto a la venta.");
       return;
     }
+    const invalidPriceItem = saleCart.find(item =>
+      !Number.isFinite(Number(item.unit_price)) || Number(item.unit_price) < 0
+    );
+    if (invalidPriceItem) {
+      setNotice(`El producto "${invalidPriceItem.name}" no tiene un precio de venta válido.`);
+      return;
+    }
     const discount = Number(saleDiscount || 0);
     const paymentOriginal = Number(salePaymentAmount || 0);
     const paymentExchangeRate = salePaymentCurrency === "USD" ? Number(usdNioRate) : 1;
@@ -831,6 +838,7 @@ function openCustomerForm(customer = null) {
         p_items: saleCart.map(item => ({
           product_id: item.product_id,
           quantity: Number(item.quantity),
+          unit_price: Number(item.unit_price),
           location_id: "home"
         })),
         p_customer_id: saleCustomerId || null,
