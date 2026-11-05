@@ -90,6 +90,16 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
   const [inventoryEntryOpen, setInventoryEntryOpen] = useState(false);
   const [inventoryAdjustmentOpen, setInventoryAdjustmentOpen] = useState(false);
+  const [locationStocks, setLocationStocks] = useState([]);
+  const [locationMovements, setLocationMovements] = useState([]);
+  const [entryLocation, setEntryLocation] = useState("home");
+  const [adjustmentLocation, setAdjustmentLocation] = useState("home");
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferProductId, setTransferProductId] = useState("");
+  const [transferFrom, setTransferFrom] = useState("home");
+  const [transferTo, setTransferTo] = useState("collective");
+  const [transferQuantity, setTransferQuantity] = useState("");
+  const [transferNote, setTransferNote] = useState("");
   const [adjustmentProductId, setAdjustmentProductId] = useState("");
   const [adjustmentQuantity, setAdjustmentQuantity] = useState("");
   const [adjustmentNote, setAdjustmentNote] = useState("");
@@ -116,6 +126,9 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
   const [salePersonId, setSalePersonId] = useState("");
   const [saleCommissionAmount, setSaleCommissionAmount] = useState("");
   const [activeSellers, setActiveSellers] = useState([]);
+  const [sellerAddOpen, setSellerAddOpen] = useState(false);
+  const [sellerNewName, setSellerNewName] = useState("");
+  const [saleProductLocation, setSaleProductLocation] = useState("home");
   const [invoiceData, setInvoiceData] = useState(null);
   const [saleQuantity, setSaleQuantity] = useState("1");
   const [saleCustomerId, setSaleCustomerId] = useState("");
@@ -220,10 +233,11 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
     async function load() {
       setLoading(true);
       setNotice("");
-      const [profileResult, productResult, customerResult] = await Promise.all([
+      const [profileResult, productResult, customerResult, locationStockResult] = await Promise.all([
         supabase.from("profiles").select("display_name, role, active").eq("user_id", session.user.id).maybeSingle(),
         supabase.from("products").select("id, sku, name, category, kind, sell_unit, stock_qty, low_stock_threshold, sale_price, active").eq("active", true).order("name"),
-        supabase.from("customers").select("id, full_name, phone, email, active, created_at").eq("active", true).order("full_name")
+        supabase.from("customers").select("id, full_name, phone, email, active, created_at").eq("active", true).order("full_name"),
+        supabase.from("inventory_location_stock").select("product_id, location_id, quantity")
       ]);
       if (!alive) return;
       if (profileResult.error) setNotice(`No se pudo leer tu perfil: ${profileResult.error.message}`);
@@ -233,6 +247,8 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
       else setProducts(productResult.data ?? []);
       if (customerResult.error) setNotice(`No se pudieron cargar los clientes: ${customerResult.error.message}`);
       else setCustomers(customerResult.data ?? []);
+      if (locationStockResult.error) setNotice(`No se pudo cargar el stock por ubicación: ${locationStockResult.error.message}`);
+      else setLocationStocks(locationStockResult.data ?? []);
       setLoading(false);
     }
     load();
@@ -241,7 +257,7 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
 
   useEffect(() => {
     if (profile?.role !== "admin" || !supabase) return;
-    supabase.from("profiles").select("user_id, display_name, role").eq("active", true)
+    supabase.from("salespeople").select("id, display_name").eq("active", true)
       .order("display_name").then(({ data, error }) => {
         if (error) setNotice(`No se pudieron cargar los vendedores: ${error.message}`);
         else setActiveSellers(data ?? []);
@@ -516,6 +532,10 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
     `${p.name} ${p.sku ?? ""} ${p.category ?? ""}`.toLowerCase().includes(search.toLowerCase())
   ), [products, search]);
 
+  function stockAtLocation(productId, locationId) {
+    return Number(locationStocks.find(row => row.product_id === productId && row.location_id === locationId)?.quantity || 0);
+  }
+
 
   function openProductForm(product = null) {
     setEditingProduct(product);
@@ -601,8 +621,9 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
 
     setSavingForm(true);
 
-    const { data, error } = await supabase.rpc("adjust_inventory", {
+    const { data, error } = await supabase.rpc("adjust_inventory_location", {
       p_product_id: adjustmentProductId,
+      p_location_id: adjustmentLocation,
       p_target_quantity: quantity,
       p_note: adjustmentNote.trim() || "Corrección por conteo físico"
     });
@@ -616,12 +637,13 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
 
     setInventoryAdjustmentOpen(false);
     setAdjustmentProductId("");
+    setAdjustmentLocation("home");
     setAdjustmentQuantity("");
     setAdjustmentNote("");
 
     await refresh();
     setNotice(
-      `Inventario ajustado. Cantidad anterior: ${data.previous_quantity}; cantidad actual: ${data.new_quantity}; diferencia: ${data.difference}.`
+      `Inventario ajustado en ${adjustmentLocation === "home" ? "Casa" : "Colectivo Somos"}. Existencias actuales: ${data.location_quantity}.`
     );
   }
 
@@ -657,12 +679,13 @@ async function saveInventoryEntry(event) {
 
     setSavingForm(true);
 
-    const { data, error } = await supabase.rpc("register_inventory_entry", {
+    const { data, error } = await supabase.rpc("register_inventory_entry_at_location", {
       p_product_id: inventoryEntryProductId,
       p_quantity: quantity,
       p_note: inventoryEntryNote.trim() || null,
       p_unit_cost: unitCost,
-      p_supplier: inventoryEntrySupplier.trim() || null
+      p_supplier: inventoryEntrySupplier.trim() || null,
+      p_location_id: entryLocation
     });
 
     setSavingForm(false);
@@ -674,6 +697,7 @@ async function saveInventoryEntry(event) {
 
     setInventoryEntryOpen(false);
     setInventoryEntryProductId("");
+    setEntryLocation("home");
     setInventoryEntryQuantity("1");
     setInventoryEntryUnitCost("");
     setInventoryEntrySupplier("");
@@ -755,21 +779,23 @@ function openCustomerForm(customer = null) {
       setNotice("Ingresa una cantidad mayor que cero.");
       return;
     }
-    const current = saleCart.find(item => item.product_id === product.id);
+    const availableAtLocation = Number(locationStocks.find(row => row.product_id === product.id && row.location_id === saleProductLocation)?.quantity || 0);
+    const current = saleCart.find(item => item.product_id === product.id && item.location_id === saleProductLocation);
     const combinedQuantity = quantity + Number(current?.quantity || 0);
-    if (combinedQuantity > Number(product.stock_qty)) {
-      setNotice(`Existencias insuficientes de ${product.name}. Disponible: ${product.stock_qty}.`);
+    if (combinedQuantity > availableAtLocation) {
+      setNotice(`Existencias insuficientes de ${product.name} en ${saleProductLocation === "home" ? "Casa" : "Colectivo Somos"}. Disponible: ${availableAtLocation}.`);
       return;
     }
     setSaleCart(previous => {
-      const existing = previous.find(item => item.product_id === product.id);
+      const existing = previous.find(item => item.product_id === product.id && item.location_id === saleProductLocation);
       if (existing) {
-        return previous.map(item => item.product_id === product.id
+        return previous.map(item => item.product_id === product.id && item.location_id === saleProductLocation
           ? { ...item, quantity: Number(item.quantity) + quantity }
           : item);
       }
       return [...previous, {
         product_id: product.id,
+        location_id: saleProductLocation,
         name: product.name,
         quantity,
         unit_price: Number(product.sale_price),
@@ -847,7 +873,7 @@ function openCustomerForm(customer = null) {
           product_id: item.product_id,
           quantity: Number(item.quantity),
           unit_price: Number(item.unit_price),
-          location_id: "home"
+          location_id: item.location_id || "home"
         })),
         p_customer_id: saleCustomerId || null,
         p_customer_name: saleCustomerName.trim() || "Cliente general",
@@ -868,10 +894,12 @@ function openCustomerForm(customer = null) {
         p_notes: saleNotes.trim() || null
       };
       if (adminSellerSale) salePayload.p_commission_amount = commissionAmount;
-      const { data, error } = await supabase.rpc(
-        adminSellerSale ? "create_sale_with_commission" : "create_sale",
-        salePayload
-      );
+      let rpcName = adminSellerSale ? "create_sale_with_commission_for_directory" : "create_sale";
+      if (adminSellerSale) {
+        salePayload.p_salesperson_directory_id = salePersonId;
+        delete salePayload.p_salesperson_id;
+      }
+      const { data, error } = await supabase.rpc(rpcName, salePayload);
       if (error) throw error;
       if (data?.success === false) {
         throw new Error(data.message || "La base de datos no confirmó la venta.");
@@ -884,7 +912,7 @@ function openCustomerForm(customer = null) {
         createdAt: new Date().toLocaleString("es-NI"),
         customerName: saleCustomerId ? customers.find(c => c.id === saleCustomerId)?.full_name : (saleCustomerName.trim() || "Cliente general"),
         customerPhone: saleCustomerId ? customers.find(c => c.id === saleCustomerId)?.phone : saleCustomerPhone.trim(),
-        sellerName: saleSalesChannel === "collective" ? "Colectivo Somos" : (activeSellers.find(s => s.user_id === (salePersonId || session.user.id))?.display_name || profile?.display_name || "Nica Decants"),
+        sellerName: saleSalesChannel === "collective" ? "Colectivo Somos" : (saleSalesChannel === "seller" && profile?.role === "admin" ? activeSellers.find(s => s.id === salePersonId)?.display_name : profile?.display_name) || "Nica Decants",
         salesChannel: saleSalesChannel === "collective" ? "Colectivo Somos" : saleSalesChannel === "seller" ? "Vendedor" : "Venta personal",
         items: saleCart.map(item => ({...item})),
         subtotal: saleSubtotal,
@@ -926,17 +954,59 @@ function openCustomerForm(customer = null) {
     }
   }
 
-  function removeSaleItem(productId) {
-    setSaleCart(previous => previous.filter(item => item.product_id !== productId));
+  function removeSaleItem(productId, locationId) {
+    setSaleCart(previous => previous.filter(item => !(item.product_id === productId && item.location_id === locationId)));
   }
 
   async function refresh() {
     if (!supabase || !session) return;
-    const { data, error } = await supabase.from("products")
-      .select("id, sku, name, category, kind, sell_unit, stock_qty, low_stock_threshold, sale_price, active")
-      .eq("active", true).order("name");
-    if (error) setNotice(error.message);
-    else { setProducts(data ?? []); setNotice("Inventario actualizado."); }
+    const [productResult, stockResult, movementResult] = await Promise.all([
+      supabase.from("products").select("id, sku, name, category, kind, sell_unit, stock_qty, low_stock_threshold, sale_price, active").eq("active", true).order("name"),
+      supabase.from("inventory_location_stock").select("product_id, location_id, quantity"),
+      profile?.role === "admin" ? supabase.from("inventory_location_movements").select("id, product_id, movement_kind, quantity, from_location_id, to_location_id, note, created_at").order("created_at", {ascending:false}).limit(25) : Promise.resolve({data:[],error:null})
+    ]);
+    if (productResult.error) setNotice(productResult.error.message);
+    else setProducts(productResult.data ?? []);
+    if (stockResult.error) setNotice(`No se pudo cargar el stock por ubicación: ${stockResult.error.message}`);
+    else setLocationStocks(stockResult.data ?? []);
+    if (movementResult.error) setNotice(`No se pudo cargar el historial de ubicaciones: ${movementResult.error.message}`);
+    else setLocationMovements(movementResult.data ?? []);
+  }
+
+  async function saveInventoryTransfer(event) {
+    event.preventDefault();
+    const quantity = Number(transferQuantity);
+    if (!transferProductId || !Number.isFinite(quantity) || quantity <= 0 || transferFrom === transferTo) {
+      setNotice("Selecciona producto, ubicaciones distintas y una cantidad válida.");
+      return;
+    }
+    setSavingForm(true);
+    const { error } = await supabase.rpc("transfer_inventory", {
+      p_product_id: transferProductId, p_from_location: transferFrom,
+      p_to_location: transferTo, p_quantity: quantity, p_note: transferNote.trim() || null
+    });
+    setSavingForm(false);
+    if (error) { setNotice("No se pudo trasladar el inventario: " + error.message); return; }
+    setTransferProductId("");
+    setTransferQuantity("");
+    setTransferNote("");
+    setTransferOpen(false);
+    await refresh();
+    setNotice("Traslado registrado correctamente.");
+  }
+
+  async function addSeller(event) {
+    event.preventDefault();
+    const displayName = sellerNewName.trim();
+    if (!displayName) return;
+    const { data, error } = await supabase.from("salespeople")
+      .insert({display_name: displayName}).select("id, display_name").single();
+    if (error) { setNotice("No se pudo agregar el vendedor: " + error.message); return; }
+    setActiveSellers(current => [...current, data].sort((a,b) => a.display_name.localeCompare(b.display_name)));
+    setSalePersonId(data.id);
+    setSellerNewName("");
+    setSellerAddOpen(false);
+    setNotice(`Vendedor ${data.display_name} agregado.`);
   }
 
   async function loadPurchaseHistory() {
@@ -1278,7 +1348,7 @@ function openCustomerForm(customer = null) {
         </div>
       </section>}
       {section === "Inventario" && <section className="content">
-        <div className="panel"><div className="panel-heading"><div><h3>Productos</h3><p className="muted">Los costos no se consultan ni se muestran en esta pantalla.</p></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="secondary" onClick={refresh}>Actualizar</button>{isAdmin && <><button className="secondary" onClick={() => setInventoryEntryOpen(!inventoryEntryOpen)}>Entrada de inventario</button><button className="secondary" onClick={() => setInventoryAdjustmentOpen(!inventoryAdjustmentOpen)}>Ajustar inventario</button><button onClick={() => openProductForm()}>Agregar producto</button></>}</div></div>
+        <div className="panel"><div className="panel-heading"><div><h3>Productos</h3><p className="muted">Los costos no se consultan ni se muestran en esta pantalla.</p></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="secondary" onClick={refresh}>Actualizar</button>{isAdmin && <><button className="secondary" onClick={() => setInventoryEntryOpen(!inventoryEntryOpen)}>Entrada de inventario</button><button className="secondary" onClick={() => setInventoryAdjustmentOpen(!inventoryAdjustmentOpen)}>Ajustar inventario</button><button className="secondary" onClick={() => setTransferOpen(!transferOpen)}>Trasladar entre ubicaciones</button><button onClick={() => openProductForm()}>Agregar producto</button></>}</div></div>
           {productFormOpen && isAdmin && <form onSubmit={saveProduct} style={{display:"grid",gap:12,padding:"16px 0"}}>
             <h3>{editingProduct ? "Editar producto" : "Nuevo producto"}</h3>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12}}>
@@ -1302,6 +1372,9 @@ function openCustomerForm(customer = null) {
                 <option value="">Seleccionar producto...</option>
                 {products.filter(p=>p.active).map(p=><option key={p.id} value={p.id}>{p.name} — Existencias actuales: {p.stock_qty} {p.sell_unit}</option>)}
               </select>
+            </label>
+            <label>Ubicación donde ingresa *
+              <select value={entryLocation} onChange={e=>setEntryLocation(e.target.value)}><option value="home">Casa</option><option value="collective">Colectivo Somos</option></select>
             </label>
             <label>Cantidad que ingresa *
               <input type="number" min="0.001" step="any" required value={inventoryEntryQuantity} onChange={e=>setInventoryEntryQuantity(e.target.value)} />
@@ -1330,11 +1403,17 @@ function openCustomerForm(customer = null) {
                 const id = e.target.value;
                 setAdjustmentProductId(id);
                 const product = products.find(p=>p.id===id);
-                setAdjustmentQuantity(product ? String(product.stock_qty) : "");
+                setAdjustmentQuantity(product ? String(stockAtLocation(id, adjustmentLocation)) : "");
               }}>
                 <option value="">Seleccionar producto...</option>
                 {products.filter(p=>p.active).map(p=><option key={p.id} value={p.id}>{p.name} — Existencias actuales: {p.stock_qty} {p.sell_unit}</option>)}
               </select>
+            </label>
+            <label>Ubicación que estás contando *
+              <select value={adjustmentLocation} onChange={e=>{
+                setAdjustmentLocation(e.target.value);
+                setAdjustmentQuantity(adjustmentProductId ? String(stockAtLocation(adjustmentProductId, e.target.value)) : "");
+              }}><option value="home">Casa</option><option value="collective">Colectivo Somos</option></select>
             </label>
             <label>Cantidad real disponible *
               <input type="number" min="0" step="any" required value={adjustmentQuantity} onChange={e=>setAdjustmentQuantity(e.target.value)} />
@@ -1347,10 +1426,24 @@ function openCustomerForm(customer = null) {
               <button type="button" className="secondary" onClick={()=>setInventoryAdjustmentOpen(false)}>Cancelar</button>
             </div>
           </form>}
-<div className="search-box"><Search size={17}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar nombre, SKU o categoría"/></div>
-          <ProductTable products={filteredProducts} empty="No hay productos para mostrar." onEdit={isAdmin ? openProductForm : null}/>
+{transferOpen && isAdmin && <form onSubmit={saveInventoryTransfer} className="panel inventory-transfer-form">
+            <div className="panel-heading"><div><p className="eyebrow">MOVIMIENTO INTERNO</p><h3>Trasladar productos</h3><p className="muted">El traslado resta de una ubicación y suma en la otra, dejando historial.</p></div></div>
+            <div className="form-grid">
+              <label>Producto<select required value={transferProductId} onChange={e=>setTransferProductId(e.target.value)}><option value="">Selecciona producto</option>{products.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+              <label>Desde<select value={transferFrom} onChange={e=>{setTransferFrom(e.target.value);setTransferTo(e.target.value==="home"?"collective":"home");}}><option value="home">Casa</option><option value="collective">Colectivo Somos</option></select></label>
+              <label>Hacia<select value={transferTo} onChange={e=>setTransferTo(e.target.value)}><option value="collective">Colectivo Somos</option><option value="home">Casa</option></select></label>
+              <label>Cantidad<input type="number" min="0.001" step="0.001" required value={transferQuantity} onChange={e=>setTransferQuantity(e.target.value)}/></label>
+              <label className="sales-field-wide">Nota opcional<input value={transferNote} onChange={e=>setTransferNote(e.target.value)} placeholder="Ej. Reposición para ventas del colectivo"/></label>
+            </div>
+            <div className="finance-actions"><button className="primary" disabled={savingForm}>{savingForm?"Registrando…":"Confirmar traslado"}</button><button type="button" className="secondary" onClick={()=>setTransferOpen(false)}>Cancelar</button></div>
+          </form>}
+          <div className="search-box"><Search size={17}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar nombre, SKU o categoría"/></div>
+          <ProductTable products={filteredProducts} empty="No hay productos para mostrar." onEdit={isAdmin ? openProductForm : null} showLocations locationStocks={locationStocks}/>
+          {isAdmin && <div className="panel inventory-history-panel"><div className="panel-heading"><div><p className="eyebrow">TRAZABILIDAD</p><h3>Movimientos por ubicación</h3><p className="muted">Últimos movimientos de entradas, ventas, ajustes y traslados.</p></div><button className="secondary" onClick={refresh}>Actualizar historial</button></div>
+            {locationMovements.length ? <div className="table-wrap"><table><thead><tr><th>Fecha</th><th>Producto</th><th>Movimiento</th><th>Cantidad</th><th>De</th><th>A</th><th>Nota</th></tr></thead><tbody>{locationMovements.map(m=><tr key={m.id}><td>{new Date(m.created_at).toLocaleString("es-NI")}</td><td>{products.find(p=>p.id===m.product_id)?.name || "Producto"}</td><td>{{opening:"Inicial",purchase:"Entrada",sale:"Venta",adjustment:"Ajuste",return:"Devolución",transfer:"Traslado"}[m.movement_kind] || m.movement_kind}</td><td>{m.quantity}</td><td>{m.from_location_id==="home"?"Casa":m.from_location_id==="collective"?"Colectivo Somos":"—"}</td><td>{m.to_location_id==="home"?"Casa":m.to_location_id==="collective"?"Colectivo Somos":"—"}</td><td>{m.note || "—"}</td></tr>)}</tbody></table></div> : <Empty text="Todavía no hay movimientos por ubicación."/>}
+          </div>}
         </div>
-        <div className="hint"><LockKeyhole size={17}/><span>El alta y modificación de productos se habilitarán mediante funciones de administrador. No se permite editar el inventario directamente desde el navegador.</span></div>
+        <div className="hint"><LockKeyhole size={17}/><span>El stock total se distribuye por ubicación. Las entradas, ajustes, ventas y traslados actualizan el historial sin permitir cambios directos al inventario desde el navegador.</span></div>
       </section>}
       {section === "Clientes" && <section className="content"><div className="panel"><div className="panel-heading"><div><h3>Clientes</h3><p className="muted">Información de contacto cargada desde Supabase.</p></div><div style={{display:"flex",gap:8,alignItems:"center"}}><span className="pill">{customers.length} clientes</span><button onClick={() => openCustomerForm()}>Agregar cliente</button></div></div>
         {customerFormOpen && <form onSubmit={saveCustomer} style={{display:"grid",gap:12,padding:"16px 0"}}>
@@ -1375,9 +1468,10 @@ function openCustomerForm(customer = null) {
                 <label>Producto
                   <select value={selectedSaleProduct} onChange={e=>setSelectedSaleProduct(e.target.value)}>
                     <option value="">Selecciona el siguiente producto</option>
-                    {products.filter(p=>p.active && Number(p.stock_qty)>0).map(p=><option key={p.id} value={p.id}>{p.name} — {p.stock_qty} {p.sell_unit} disponibles · {money(p.sale_price)}</option>)}
+                    {products.filter(p=>p.active && stockAtLocation(p.id, saleProductLocation)>0).map(p=><option key={p.id} value={p.id}>{p.name} — {stockAtLocation(p.id,saleProductLocation)} {p.sell_unit} disponibles · {money(p.sale_price)}</option>)}
                   </select>
                 </label>
+                <label>Sale desde<select value={saleProductLocation} onChange={e=>setSaleProductLocation(e.target.value)}><option value="home">Casa</option><option value="collective">Colectivo Somos</option></select></label>
                 <label>Cantidad<input type="number" min="0.001" step="0.001" value={saleQuantity} onChange={e=>setSaleQuantity(e.target.value)}/></label>
                 <button className="sales-add-button" type="button" onClick={addSaleItem}>+ Agregar artículo</button>
               </div>
@@ -1385,11 +1479,11 @@ function openCustomerForm(customer = null) {
             <div className="panel sales-panel">
               <div className="panel-heading"><div><h3>2. Artículos de la venta</h3><p className="muted">Perfumes enteros, decants y suministros pueden ir juntos.</p></div><span className="pill">{saleCart.length} en la factura</span></div>
               {saleCart.length ? <div className="table-wrap"><table className="sales-cart-table">
-                <thead><tr><th>Producto</th><th>Cantidad</th><th>Precio unitario</th><th>Importe</th><th>Acción</th></tr></thead>
-                <tbody>{saleCart.map(item=><tr key={item.product_id}>
-                  <td><strong>{item.name}</strong><small>{item.sell_unit}</small></td><td>{item.quantity} {item.sell_unit}</td>
+                <thead><tr><th>Producto</th><th>Ubicación</th><th>Cantidad</th><th>Precio unitario</th><th>Importe</th><th>Acción</th></tr></thead>
+                <tbody>{saleCart.map(item=><tr key={item.product_id+item.location_id}>
+                  <td><strong>{item.name}</strong><small>{item.sell_unit}</small></td><td>{item.location_id==="home"?"Casa":"Colectivo Somos"}</td><td>{item.quantity} {item.sell_unit}</td>
                   <td>{money(item.unit_price)}</td><td><strong>{money(Number(item.quantity)*Number(item.unit_price))}</strong></td>
-                  <td><button type="button" className="secondary" onClick={()=>removeSaleItem(item.product_id)}>Quitar</button></td>
+                  <td><button type="button" className="secondary" onClick={()=>removeSaleItem(item.product_id,item.location_id)}>Quitar</button></td>
                 </tr>)}</tbody>
               </table></div> : <div className="sales-empty-cart"><Package size={24}/><strong>Aún no hay productos</strong><span>Elige un producto arriba y pulsa “Agregar artículo”. Repite para incluir más.</span></div>}
             </div>
@@ -1403,7 +1497,14 @@ function openCustomerForm(customer = null) {
                 </>}
                 {profile?.role === "admin" ? <label>Canal de venta<select value={saleSalesChannel} onChange={e=>setSaleSalesChannel(e.target.value)}><option value="direct">Venta personal (sin comisión)</option><option value="seller">Venta de vendedor (comisión personalizada)</option><option value="collective">Venta del colectivo Somos</option></select></label> : <label>Canal de venta<input value="Venta de vendedor" readOnly/></label>}
                 {saleSalesChannel === "seller" && profile?.role === "admin" && <>
-                  <label>Vendedor responsable<select required value={salePersonId} onChange={e=>setSalePersonId(e.target.value)}><option value="">Selecciona el vendedor</option>{activeSellers.filter(seller=>seller.role === "employee").map(seller=><option key={seller.user_id} value={seller.user_id}>{seller.display_name}</option>)}</select></label>
+                  <label>Vendedor responsable<select required value={salePersonId} onChange={e=>setSalePersonId(e.target.value)}><option value="">Selecciona el vendedor</option>{activeSellers.map(seller=><option key={seller.id} value={seller.id}>{seller.display_name}</option>)}</select></label>
+                  <div className="sales-field-wide">
+                    <button type="button" className="secondary" onClick={()=>setSellerAddOpen(open=>!open)}>+ Agregar vendedor</button>
+                    {sellerAddOpen && <form onSubmit={addSeller} className="seller-add-form">
+                      <label>Nombre del vendedor<input required maxLength="80" value={sellerNewName} onChange={e=>setSellerNewName(e.target.value)} placeholder="Ej. Juan O."/></label>
+                      <div className="finance-actions"><button className="primary" type="submit">Guardar vendedor</button><button className="secondary" type="button" onClick={()=>setSellerAddOpen(false)}>Cancelar</button></div>
+                    </form>}
+                  </div>
                   <label>Comisión de esta venta (C$)<input type="number" min="0" max={saleTotal} step="0.01" required value={saleCommissionAmount} onChange={e=>setSaleCommissionAmount(e.target.value)} placeholder="Ej. 360.00"/><small className="muted">Se registrará automáticamente en Finanzas, vinculada a este vendedor.</small></label>
                 </>}
               </div>
@@ -2219,9 +2320,10 @@ function openCustomerForm(customer = null) {
 function Metric({icon,label,value}) {
   return <div className="metric"><div className="metric-icon">{icon}</div><p>{label}</p><strong>{value}</strong></div>;
 }
-function ProductTable({products,empty,onEdit=null}) {
+function ProductTable({products,empty,onEdit=null,showLocations=false,locationStocks=[]}) {
   if (!products.length) return <Empty text={empty}/>;
-  return <div className="table-wrap"><table><thead><tr><th>Producto</th><th>Categoría</th><th>Tipo</th><th>Existencias</th><th>Precio de venta</th>{onEdit && <th>Acciones</th>}</tr></thead><tbody>{products.map(p=><tr key={p.id}><td><strong>{p.name}</strong><small>{p.sku || "Sin SKU"}</small></td><td>{p.category}</td><td>{({finished:"Producto terminado",supply:"Suministro",source_perfume:"Perfume original"})[p.kind] || p.kind}</td><td><span className={Number(p.stock_qty)<=Number(p.low_stock_threshold)?"stock low":"stock"}>{p.stock_qty} {p.sell_unit}</span></td><td>{money(p.sale_price)}</td>{onEdit && <td><button className="secondary" onClick={()=>onEdit(p)}>Editar</button></td>}</tr>)}</tbody></table></div>;
+  const quantityAt=(productId,locationId)=>Number(locationStocks.find(row=>row.product_id===productId&&row.location_id===locationId)?.quantity||0);
+  return <div className="table-wrap"><table><thead><tr><th>Producto</th><th>Categoría</th><th>Tipo</th><th>Existencias</th>{showLocations&&<><th>Casa</th><th>Colectivo Somos</th></>}<th>Precio de venta</th>{onEdit && <th>Acciones</th>}</tr></thead><tbody>{products.map(p=><tr key={p.id}><td><strong>{p.name}</strong><small>{p.sku || "Sin SKU"}</small></td><td>{p.category}</td><td>{({finished:"Producto terminado",supply:"Suministro",source_perfume:"Perfume original"})[p.kind] || p.kind}</td><td><span className={Number(p.stock_qty)<=Number(p.low_stock_threshold)?"stock low":"stock"}>{p.stock_qty} {p.sell_unit}</span></td>{showLocations&&<><td>{quantityAt(p.id,"home")} {p.sell_unit}</td><td>{quantityAt(p.id,"collective")} {p.sell_unit}</td></>}<td>{money(p.sale_price)}</td>{onEdit && <td><button className="secondary" onClick={()=>onEdit(p)}>Editar</button></td>}</tr>)}</tbody></table></div>;
 }
 function Empty({text}) { return <div className="empty-state"><Package size={28}/><p>{text}</p></div>; }
 
