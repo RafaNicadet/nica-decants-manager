@@ -114,6 +114,7 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
   const [selectedSaleProduct, setSelectedSaleProduct] = useState("");
   const [saleSalesChannel, setSaleSalesChannel] = useState("direct");
   const [salePersonId, setSalePersonId] = useState("");
+  const [saleCommissionAmount, setSaleCommissionAmount] = useState("");
   const [activeSellers, setActiveSellers] = useState([]);
   const [invoiceData, setInvoiceData] = useState(null);
   const [saleQuantity, setSaleQuantity] = useState("1");
@@ -799,6 +800,7 @@ function openCustomerForm(customer = null) {
       return;
     }
     const discount = Number(saleDiscount || 0);
+    const commissionAmount = Number(saleCommissionAmount);
     const paymentOriginal = Number(salePaymentAmount || 0);
     const paymentExchangeRate = salePaymentCurrency === "USD" ? Number(usdNioRate) : 1;
     const payment = paymentOriginal * paymentExchangeRate;
@@ -830,11 +832,17 @@ function openCustomerForm(customer = null) {
       setNotice("Selecciona qué vendedor realizó la venta.");
       return;
     }
+    if (saleSalesChannel === "seller" && profile?.role === "admin" &&
+        (!saleCommissionAmount.trim() || !Number.isFinite(commissionAmount) || commissionAmount < 0 || commissionAmount > saleTotal)) {
+      setNotice("Ingresa una comisión válida, entre cero y el total de la venta.");
+      return;
+    }
 
     setSavingForm(true);
     setNotice("");
     try {
-      const { data, error } = await supabase.rpc("create_sale", {
+      const adminSellerSale = saleSalesChannel === "seller" && profile?.role === "admin";
+      const salePayload = {
         p_items: saleCart.map(item => ({
           product_id: item.product_id,
           quantity: Number(item.quantity),
@@ -858,7 +866,12 @@ function openCustomerForm(customer = null) {
         p_payment_method: salePaymentMethod,
         p_payment_reference: salePaymentReference.trim() || null,
         p_notes: saleNotes.trim() || null
-      });
+      };
+      if (adminSellerSale) salePayload.p_commission_amount = commissionAmount;
+      const { data, error } = await supabase.rpc(
+        adminSellerSale ? "create_sale_with_commission" : "create_sale",
+        salePayload
+      );
       if (error) throw error;
       if (data?.success === false) {
         throw new Error(data.message || "La base de datos no confirmó la venta.");
@@ -890,6 +903,7 @@ function openCustomerForm(customer = null) {
       setSaleQuantity("1");
       setSaleSalesChannel("direct");
       setSalePersonId("");
+      setSaleCommissionAmount("");
       setSaleCustomerId("");
       setSaleCustomerName("");
       setSaleCustomerPhone("");
@@ -1103,7 +1117,7 @@ function openCustomerForm(customer = null) {
             .order("expense_date", { ascending: false }),
 
           supabase.from("sales").select(
-            "id, status, total, issued_at, created_at, delivery_charge, delivery_cost"
+            "id, status, total, issued_at, created_at, delivery_charge, delivery_cost, commission_amount"
           ).eq("status", "issued")
             .gte("issued_at", from).lt("issued_at", nextMonth),
 
@@ -1387,8 +1401,11 @@ function openCustomerForm(customer = null) {
                   <label>Nombre del cliente (opcional)<input value={saleCustomerName} onChange={e=>setSaleCustomerName(e.target.value)} placeholder="Cliente general"/></label>
                   <label>Teléfono (opcional)<input value={saleCustomerPhone} onChange={e=>setSaleCustomerPhone(e.target.value)}/></label>
                 </>}
-                {profile?.role === "admin" ? <label>Canal de venta<select value={saleSalesChannel} onChange={e=>setSaleSalesChannel(e.target.value)}><option value="direct">Venta personal (sin comisión)</option><option value="seller">Venta de vendedor (comisión sobre ganancia)</option><option value="collective">Venta del colectivo Somos</option></select></label> : <label>Canal de venta<input value="Venta de vendedor" readOnly/></label>}
-                {saleSalesChannel === "seller" && profile?.role === "admin" && <label>Vendedor responsable<select required value={salePersonId} onChange={e=>setSalePersonId(e.target.value)}><option value="">Selecciona el vendedor</option>{activeSellers.filter(seller=>seller.role === "employee").map(seller=><option key={seller.user_id} value={seller.user_id}>{seller.display_name}</option>)}</select></label>}
+                {profile?.role === "admin" ? <label>Canal de venta<select value={saleSalesChannel} onChange={e=>setSaleSalesChannel(e.target.value)}><option value="direct">Venta personal (sin comisión)</option><option value="seller">Venta de vendedor (comisión personalizada)</option><option value="collective">Venta del colectivo Somos</option></select></label> : <label>Canal de venta<input value="Venta de vendedor" readOnly/></label>}
+                {saleSalesChannel === "seller" && profile?.role === "admin" && <>
+                  <label>Vendedor responsable<select required value={salePersonId} onChange={e=>setSalePersonId(e.target.value)}><option value="">Selecciona el vendedor</option>{activeSellers.filter(seller=>seller.role === "employee").map(seller=><option key={seller.user_id} value={seller.user_id}>{seller.display_name}</option>)}</select></label>
+                  <label>Comisión de esta venta (C$)<input type="number" min="0" max={saleTotal} step="0.01" required value={saleCommissionAmount} onChange={e=>setSaleCommissionAmount(e.target.value)} placeholder="Ej. 360.00"/><small className="muted">Se registrará automáticamente en Finanzas, vinculada a este vendedor.</small></label>
+                </>}
               </div>
             </div>
             <div className="panel sales-panel">
@@ -2029,6 +2046,7 @@ function openCustomerForm(customer = null) {
   const totalSales = financeSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
   const totalPayments = financePayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
   const totalExpenses = financeExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+  const totalCommissions = financeSales.reduce((sum, sale) => sum + Number(sale.commission_amount || 0), 0);
   const deliveryRevenue = financeSales.reduce((sum, sale) => sum + Number(sale.delivery_charge || 0), 0);
   const deliveryCost = financeSales.reduce((sum, sale) => sum + Number(sale.delivery_cost || 0), 0);
   const costMovements = financeMovements.filter(m => m.unit_cost !== null && m.unit_cost !== undefined);
@@ -2047,7 +2065,7 @@ function openCustomerForm(customer = null) {
     !salesWithAnyMovement.has(sale.id) ||
     salesWithMissingCost.has(sale.id)
   ).length;
-  const estimatedResult = totalSales - documentedCost - totalExpenses - deliveryCost;
+  const estimatedResult = totalSales - documentedCost - totalExpenses - deliveryCost - totalCommissions;
   const methodLabels = {
     cash: "Efectivo",
     transfer: "Transferencia",
@@ -2075,7 +2093,8 @@ function openCustomerForm(customer = null) {
         <Metric icon={<ReceiptText/>} label="Ventas emitidas" value={money(totalSales)} />
         <Metric icon={<Wallet/>} label="Cobros recibidos" value={money(totalPayments)} />
         <Metric icon={<Wallet/>} label="Gastos operativos" value={money(totalExpenses)} />
-        <Metric icon={<Sprout/>} label="Resultado estimado*" value={money(estimatedResult)} />
+        <Metric icon={<Wallet/>} label="Comisiones de vendedores" value={money(totalCommissions)} />
+        <Metric icon={<Sprout/>> label="Resultado estimado*" value={money(estimatedResult)} />
       </div>
 
       <div className="finance-summary-grid">
@@ -2089,7 +2108,7 @@ function openCustomerForm(customer = null) {
         <AlertTriangle size={17}/>
         <span><strong>Importante:</strong> el resultado es parcial cuando faltan costos históricos. En este mes, {salesMissingCost} venta(s) no tienen costo documentado completo. Los cobros recibidos son un dato de caja separado de las ventas emitidas. Las compras de inventario y los abonos de importaciones no se cuentan como gastos operativos.</span>
       </div>
-      <p className="muted finance-footnote">*Resultado estimado = ventas emitidas − costos de producto documentados − gastos operativos − costos de entrega. No equivale a utilidad neta definitiva si hay costos faltantes.</p>
+      <p className="muted finance-footnote">*Resultado estimado = ventas emitidas − costos de producto documentados − gastos operativos − comisiones registradas − costos de entrega. Las comisiones se guardan desde la venta para evitar duplicarlas como gastos. El resultado puede ser parcial si faltan costos.</p>
     </div>
 
     <div className="panel">
