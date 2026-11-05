@@ -36,7 +36,7 @@ function Login({ onNotice, notice }) {
 
   return <main className="login-wrap">
     <section className="login-card">
-      <div className="brand-mark"><Sprout size={30}/></div>
+      <img className="login-logo" src="/nica-decants-logo.svg" alt="Nica Decants Perfume Store" />
       <p className="eyebrow">GESTIÓN COMERCIAL</p>
       <h1>Nica Decants <span>Manager</span></h1>
       <p className="muted">Ingresa con la cuenta que te haya creado el administrador.</p>
@@ -112,12 +112,17 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
   });
   const [saleCart, setSaleCart] = useState([]);
   const [selectedSaleProduct, setSelectedSaleProduct] = useState("");
+  const [saleSalesChannel, setSaleSalesChannel] = useState("direct");
+  const [salePersonId, setSalePersonId] = useState("");
+  const [activeSellers, setActiveSellers] = useState([]);
+  const [invoiceData, setInvoiceData] = useState(null);
   const [saleQuantity, setSaleQuantity] = useState("1");
   const [saleCustomerId, setSaleCustomerId] = useState("");
   const [saleCustomerName, setSaleCustomerName] = useState("");
   const [saleCustomerPhone, setSaleCustomerPhone] = useState("");
   const [saleDiscount, setSaleDiscount] = useState("0");
   const [salePaymentAmount, setSalePaymentAmount] = useState("0");
+  const [salePaymentCurrency, setSalePaymentCurrency] = useState("NIO");
   const [salePaymentMethod, setSalePaymentMethod] = useState("cash");
   const [salePaymentReference, setSalePaymentReference] = useState("");
   const [saleNotes, setSaleNotes] = useState("");
@@ -179,6 +184,9 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
     ordered_at: new Date().toISOString().slice(0, 10),
     estimated_arrival: "",
     purchase_total: "0",
+    purchase_amount_original: "0",
+    purchase_currency: "NIO",
+    purchase_exchange_rate: "1",
     package_weight_lb: "0",
     package_rate_per_lb: "7",
     exchange_rate: "37.11",
@@ -230,6 +238,19 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
     return () => { alive = false; };
   }, [session]);
 
+  useEffect(() => {
+    if (profile?.role !== "admin" || !supabase) return;
+    supabase.from("profiles").select("user_id, display_name, role").eq("active", true)
+      .order("display_name").then(({ data, error }) => {
+        if (error) setNotice(`No se pudieron cargar los vendedores: ${error.message}`);
+        else setActiveSellers(data ?? []);
+      });
+  }, [profile]);
+
+  useEffect(() => {
+    if (profile?.role === "employee") setSaleSalesChannel("seller");
+  }, [profile?.role]);
+
   async function loadImports() {
     if (!supabase || profile?.role !== "admin") return;
     setImportsLoading(true);
@@ -255,13 +276,16 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
       setNotice("Completa el proveedor y la agencia de envío.");
       return;
     }
-    const purchaseTotal = Number(importForm.purchase_total);
+    const purchaseAmountOriginal = Number(importForm.purchase_amount_original);
+    const purchaseCurrency = importForm.purchase_currency;
+    const purchaseExchangeRate = purchaseCurrency === "USD" ? Number(importForm.exchange_rate) : 1;
+    const purchaseTotal = purchaseAmountOriginal * purchaseExchangeRate;
     const packageWeight = Number(importForm.package_weight_lb);
     const packageRateUsd = Number(importForm.package_rate_per_lb);
     const exchangeRate = Number(importForm.exchange_rate);
     const packageRate = packageRateUsd * exchangeRate;
 
-    if (!Number.isFinite(purchaseTotal) || purchaseTotal < 0) {
+    if (!Number.isFinite(purchaseAmountOriginal) || purchaseAmountOriginal < 0) {
       setNotice("El total de compra debe ser cero o mayor.");
       return;
     }
@@ -288,6 +312,9 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
       ordered_at: importForm.ordered_at,
       estimated_arrival: importForm.estimated_arrival || null,
       purchase_total: purchaseTotal,
+      purchase_amount_original: purchaseAmountOriginal,
+      purchase_currency: purchaseCurrency,
+      purchase_exchange_rate: purchaseExchangeRate,
       exchange_rate: exchangeRate,
       notes: importForm.notes.trim() || null
     };
@@ -349,6 +376,9 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
       ordered_at: new Date().toISOString().slice(0, 10),
       estimated_arrival: "",
       purchase_total: "0",
+      purchase_amount_original: "0",
+      purchase_currency: "NIO",
+      purchase_exchange_rate: "1",
       package_weight_lb: "0",
       package_rate_per_lb: "7",
     exchange_rate: "37.11",
@@ -747,6 +777,7 @@ function openCustomerForm(customer = null) {
       }];
     });
     setNotice("");
+    setSelectedSaleProduct("");
     setSaleQuantity("1");
   }
 
@@ -761,7 +792,9 @@ function openCustomerForm(customer = null) {
       return;
     }
     const discount = Number(saleDiscount || 0);
-    const payment = Number(salePaymentAmount || 0);
+    const paymentOriginal = Number(salePaymentAmount || 0);
+    const paymentExchangeRate = salePaymentCurrency === "USD" ? Number(usdNioRate) : 1;
+    const payment = paymentOriginal * paymentExchangeRate;
     const deliveryCharge = saleDeliveryType === "none" ? 0 : Number(saleDeliveryCharge || 0);
     const deliveryCost = saleDeliveryType === "none" ? 0 : Number(saleDeliveryCost || 0);
     const deliveryAddress = saleDeliveryType === "none" ? null : saleDeliveryAddress.trim();
@@ -782,8 +815,12 @@ function openCustomerForm(customer = null) {
       setNotice("Ingresa la dirección del cliente.");
       return;
     }
-    if (!Number.isFinite(payment) || payment < 0 || payment > saleTotal) {
-      setNotice("El pago debe estar entre cero y el total de la venta.");
+    if (!Number.isFinite(paymentOriginal) || !Number.isFinite(paymentExchangeRate) || paymentExchangeRate <= 0 || !Number.isFinite(payment) || payment < 0 || payment > saleTotal) {
+      setNotice("El equivalente del pago debe estar entre cero y el total de la venta.");
+      return;
+    }
+    if (saleSalesChannel === "seller" && profile?.role === "admin" && !salePersonId) {
+      setNotice("Selecciona qué vendedor realizó la venta.");
       return;
     }
 
@@ -799,14 +836,17 @@ function openCustomerForm(customer = null) {
         p_customer_id: saleCustomerId || null,
         p_customer_name: saleCustomerName.trim() || "Cliente general",
         p_customer_phone: saleCustomerPhone.trim() || null,
-        p_sales_channel: "direct",
-        p_salesperson_id: session.user.id,
+        p_sales_channel: saleSalesChannel,
+        p_salesperson_id: saleSalesChannel === "collective" ? session.user.id : (salePersonId || session.user.id),
         p_discount: discount,
         p_delivery_type: saleDeliveryType,
         p_delivery_address: deliveryAddress,
         p_delivery_charge: deliveryCharge,
         p_delivery_cost: deliveryCost,
         p_payment_amount: payment,
+        p_payment_currency: salePaymentCurrency,
+        p_payment_amount_original: paymentOriginal,
+        p_payment_exchange_rate: paymentExchangeRate,
         p_payment_method: salePaymentMethod,
         p_payment_reference: salePaymentReference.trim() || null,
         p_notes: saleNotes.trim() || null
@@ -818,14 +858,36 @@ function openCustomerForm(customer = null) {
 
       const invoice = data?.invoice ||
         `${data?.invoice_series || "ND"}-${String(data?.invoice_number || "").padStart(4, "0")}`;
+      setInvoiceData({
+        invoice,
+        createdAt: new Date().toLocaleString("es-NI"),
+        customerName: saleCustomerId ? customers.find(c => c.id === saleCustomerId)?.full_name : (saleCustomerName.trim() || "Cliente general"),
+        customerPhone: saleCustomerId ? customers.find(c => c.id === saleCustomerId)?.phone : saleCustomerPhone.trim(),
+        sellerName: saleSalesChannel === "collective" ? "Colectivo Somos" : (activeSellers.find(s => s.user_id === (salePersonId || session.user.id))?.display_name || profile?.display_name || "Nica Decants"),
+        salesChannel: saleSalesChannel === "collective" ? "Colectivo Somos" : saleSalesChannel === "seller" ? "Vendedor" : "Venta personal",
+        items: saleCart.map(item => ({...item})),
+        subtotal: saleSubtotal,
+        discount,
+        total: Number(data?.total ?? saleTotal),
+        paid: payment,
+        paidOriginal: paymentOriginal,
+        paidCurrency: salePaymentCurrency,
+        paidExchangeRate: paymentExchangeRate,
+        deliveryType: saleDeliveryType,
+        deliveryCharge,
+        warranty: "No se aceptan cambios ni devoluciones por gustos personales, cambios de opinión o incompatibilidad con las preferencias del cliente. Se atenderán reclamos por productos dañados o defectuosos, previa verificación.\n\nEquipos electrónicos (mini impresoras): Cuentan con una garantía comercial de 15 días calendario a partir de la compra, aplicable únicamente a defectos de fábrica. No cubre daños por golpes, caídas, humedad, mal uso o manipulación inadecuada.\n\nEn caso de proceder la garantía, se priorizará el cambio por otro producto igual, sujeto a disponibilidad. No se realizarán devoluciones de dinero por motivos de preferencia personal."
+      });
       setSaleCart([]);
       setSelectedSaleProduct("");
       setSaleQuantity("1");
+      setSaleSalesChannel("direct");
+      setSalePersonId("");
       setSaleCustomerId("");
       setSaleCustomerName("");
       setSaleCustomerPhone("");
       setSaleDiscount("0");
       setSalePaymentAmount("0");
+      setSalePaymentCurrency("NIO");
       setSalePaymentMethod("cash");
       setSalePaymentReference("");
       setSaleNotes("");
@@ -968,12 +1030,12 @@ function openCustomerForm(customer = null) {
   }, [section, financeMonth, profile?.role]);
 
   useEffect(() => {
-    if (!supabase || profile?.role !== "admin") return;
+    if (!supabase || !profile?.active) return;
     supabase.rpc("get_usd_nio_rate").then(({ data, error }) => {
       if (error) setNotice(`No se pudo cargar la tasa de cambio: ${error.message}`);
       else if (Number(data) > 0) setUsdNioRate(String(data));
     });
-  }, [profile?.role]);
+  }, [profile?.active]);
 
   useEffect(() => {
     setPurchaseForm(current => current.currency === "USD" ? {...current, exchange_rate: usdNioRate} : current);
@@ -1278,114 +1340,85 @@ function openCustomerForm(customer = null) {
         </form>}
         {customers.length ? <div className="table-wrap"><table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Correo</th><th>Saldo pendiente</th><th>Acciones</th></tr></thead><tbody>{customers.map(c=><tr key={c.id}><td>{c.full_name}</td><td>{c.phone || "—"}</td><td>{c.email || "—"}</td><td>{money(customerBalances[c.id] || 0)}</td><td><button className="secondary" onClick={()=>openCustomerForm(c)}>Editar</button></td></tr>)}</tbody></table></div> : <Empty text="Todavía no hay clientes. Puedes agregar el primero con el botón de arriba."/>}
       </div></section>}
-      {section === "Ventas" && <section className="content">
-        <div className="panel">
-          <div className="panel-heading">
-            <div><h3>Nueva venta</h3><p className="muted">El inventario se actualizará al confirmar la venta.</p></div>
-            <span className="pill">{saleCart.length} productos</span>
-          </div>
-          <form onSubmit={saveSale} style={{display:"grid",gap:16}}>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12}}>
-              <label>Producto
-                <select value={selectedSaleProduct} onChange={e=>setSelectedSaleProduct(e.target.value)} required>
-                  <option value="">Seleccionar producto...</option>
-                  {products.filter(p=>p.active && Number(p.stock_qty)>0).map(p=><option key={p.id} value={p.id}>{p.name} — Stock: {p.stock_qty} {p.sell_unit} — {money(p.sale_price)}</option>)}
-                </select>
-              </label>
-              <label>Cantidad
-                <input type="number" min="0.001" step="0.001" value={saleQuantity} onChange={e=>setSaleQuantity(e.target.value)} required/>
-              </label>
-              <div style={{display:"flex",alignItems:"end"}}>
-                <button type="button" onClick={addSaleItem}>Agregar al carrito</button>
+      {section === "Ventas" && <section className="content sales-page">
+        <div className="sales-hero">
+          <div><p className="eyebrow">PUNTO DE VENTA</p><h2>Nueva venta</h2><p>Agrega varios artículos a una sola factura y confirma el pago.</p></div>
+          <div className="sales-hero-count"><strong>{saleCart.length}</strong><span>{saleCart.length === 1 ? "artículo" : "artículos"}</span></div>
+        </div>
+        <form className="sales-layout" onSubmit={saveSale}>
+          <div className="sales-main-column">
+            <div className="panel sales-panel">
+              <div className="panel-heading"><div><h3>1. Agregar productos</h3><p className="muted">Añade cada producto aquí; todos quedan juntos en la misma venta.</p></div></div>
+              <div className="sales-add-row">
+                <label>Producto
+                  <select value={selectedSaleProduct} onChange={e=>setSelectedSaleProduct(e.target.value)}>
+                    <option value="">Selecciona el siguiente producto</option>
+                    {products.filter(p=>p.active && Number(p.stock_qty)>0).map(p=><option key={p.id} value={p.id}>{p.name} — {p.stock_qty} {p.sell_unit} disponibles · {money(p.sale_price)}</option>)}
+                  </select>
+                </label>
+                <label>Cantidad<input type="number" min="0.001" step="0.001" value={saleQuantity} onChange={e=>setSaleQuantity(e.target.value)}/></label>
+                <button className="sales-add-button" type="button" onClick={addSaleItem}>+ Agregar artículo</button>
               </div>
             </div>
-
-            {saleCart.length ? <div className="table-wrap"><table>
-              <thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Importe</th><th>Acción</th></tr></thead>
-              <tbody>{saleCart.map(item=><tr key={item.product_id}>
-                <td>{item.name}</td>
-                <td>{item.quantity} {item.sell_unit}</td>
-                <td>{money(item.unit_price)}</td>
-                <td>{money(Number(item.quantity)*Number(item.unit_price))}</td>
-                <td><button type="button" className="secondary" onClick={()=>removeSaleItem(item.product_id)}>Quitar</button></td>
-              </tr>)}</tbody>
-            </table></div> : <p className="muted">El carrito está vacío. Agrega un producto para comenzar.</p>}
-
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12}}>
-              <label>Cliente
-                <select value={saleCustomerId} onChange={e=>setSaleCustomerId(e.target.value)}>
-                  <option value="">Cliente general</option>
-                  {customers.map(c=><option key={c.id} value={c.id}>{c.full_name}</option>)}
-                </select>
-              </label>
-              {!saleCustomerId && <>
-                <label>Nombre del cliente (opcional)
-                  <input value={saleCustomerName} onChange={e=>setSaleCustomerName(e.target.value)} placeholder="Cliente general"/>
-                </label>
-                <label>Teléfono (opcional)
-                  <input value={saleCustomerPhone} onChange={e=>setSaleCustomerPhone(e.target.value)}/>
-                </label>
-              </>}
-              <label>Descuento (C$)
-                <input type="number" min="0" max={saleSubtotal} step="0.01" value={saleDiscount} onChange={e=>setSaleDiscount(e.target.value)} required/>
-              </label>
-              <label>Pago recibido (C$)
-                <input type="number" min="0" max={saleTotal} step="0.01" value={salePaymentAmount} onChange={e=>setSalePaymentAmount(e.target.value)} required/>
-              </label>
-              <label>Método de pago
-                <select value={salePaymentMethod} onChange={e=>setSalePaymentMethod(e.target.value)}>
-                  <option value="cash">Efectivo</option>
-                  <option value="transfer">Transferencia</option>
-                  <option value="card">Tarjeta</option>
-                  <option value="other">Otro</option>
-                </select>
-              </label>
-              <label>Referencia del pago (opcional)
-                <input value={salePaymentReference} onChange={e=>setSalePaymentReference(e.target.value)}/>
-              </label>
+            <div className="panel sales-panel">
+              <div className="panel-heading"><div><h3>2. Artículos de la venta</h3><p className="muted">Perfumes enteros, decants y suministros pueden ir juntos.</p></div><span className="pill">{saleCart.length} en la factura</span></div>
+              {saleCart.length ? <div className="table-wrap"><table className="sales-cart-table">
+                <thead><tr><th>Producto</th><th>Cantidad</th><th>Precio unitario</th><th>Importe</th><th>Acción</th></tr></thead>
+                <tbody>{saleCart.map(item=><tr key={item.product_id}>
+                  <td><strong>{item.name}</strong><small>{item.sell_unit}</small></td><td>{item.quantity} {item.sell_unit}</td>
+                  <td>{money(item.unit_price)}</td><td><strong>{money(Number(item.quantity)*Number(item.unit_price))}</strong></td>
+                  <td><button type="button" className="secondary" onClick={()=>removeSaleItem(item.product_id)}>Quitar</button></td>
+                </tr>)}</tbody>
+              </table></div> : <div className="sales-empty-cart"><Package size={24}/><strong>Aún no hay productos</strong><span>Elige un producto arriba y pulsa “Agregar artículo”. Repite para incluir más.</span></div>}
             </div>
-            <div className="panel" style={{display:"grid",gap:12}}>
-              <h3>Delivery</h3>
-              <label>Tipo de delivery
-                <select value={saleDeliveryType} onChange={e=>setSaleDeliveryType(e.target.value)}>
-                  <option value="none">Sin delivery / retiro</option>
-                  <option value="colectivo">Delivery del colectivo</option>
-                  <option value="privado">Delivery privado</option>
-                </select>
-              </label>
-              {saleDeliveryType !== "none" && <>
-                <label>Dirección del cliente *
-                  <textarea value={saleDeliveryAddress} onChange={e=>setSaleDeliveryAddress(e.target.value)} rows="2" required placeholder="Dirección exacta de entrega"/>
-                </label>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12}}>
-                  <label>Delivery cobrado al cliente (C$)
-                    <input type="number" min="0" step="0.01" value={saleDeliveryCharge} onChange={e=>setSaleDeliveryCharge(e.target.value)} required/>
-                  </label>
-                  <label>Costo real del delivery (C$)
-                    <input type="number" min="0" step="0.01" value={saleDeliveryCost} onChange={e=>setSaleDeliveryCost(e.target.value)} required/>
-                  </label>
-                </div>
-                <p className="muted">Diferencia del delivery: {money(Number(saleDeliveryCharge || 0)-Number(saleDeliveryCost || 0))}</p>
-              </>}
+            <div className="panel sales-panel">
+              <div className="panel-heading"><div><h3>3. Cliente y responsable</h3><p className="muted">Registra quién realizó la venta para dar seguimiento a comisiones.</p></div></div>
+              <div className="sales-fields-grid">
+                <label>Cliente<select value={saleCustomerId} onChange={e=>setSaleCustomerId(e.target.value)}><option value="">Cliente general</option>{customers.map(c=><option key={c.id} value={c.id}>{c.full_name}</option>)}</select></label>
+                {!saleCustomerId && <>
+                  <label>Nombre del cliente (opcional)<input value={saleCustomerName} onChange={e=>setSaleCustomerName(e.target.value)} placeholder="Cliente general"/></label>
+                  <label>Teléfono (opcional)<input value={saleCustomerPhone} onChange={e=>setSaleCustomerPhone(e.target.value)}/></label>
+                </>}
+                {profile?.role === "admin" ? <label>Canal de venta<select value={saleSalesChannel} onChange={e=>setSaleSalesChannel(e.target.value)}><option value="direct">Venta personal (sin comisión)</option><option value="seller">Venta de vendedor (comisión sobre ganancia)</option><option value="collective">Venta del colectivo Somos</option></select></label> : <label>Canal de venta<input value="Venta de vendedor" readOnly/></label>}
+                {saleSalesChannel === "seller" && profile?.role === "admin" && <label>Vendedor responsable<select required value={salePersonId} onChange={e=>setSalePersonId(e.target.value)}><option value="">Selecciona el vendedor</option>{activeSellers.filter(seller=>seller.role === "employee").map(seller=><option key={seller.user_id} value={seller.user_id}>{seller.display_name}</option>)}</select></label>}
+              </div>
             </div>
-
-            <label>Notas (opcional)
-              <textarea value={saleNotes} onChange={e=>setSaleNotes(e.target.value)} rows="2"/>
-            </label>
-
-            <div style={{marginLeft:"auto",minWidth:240,display:"grid",gap:8,textAlign:"right"}}>
-              <div>Subtotal: <strong>{money(saleSubtotal)}</strong></div>
-              <div>Descuento: <strong>{money(saleDiscount)}</strong></div>
-              {saleDeliveryType !== "none" && <div>Delivery: <strong>{money(saleDeliveryCharge)}</strong></div>}
-              <div style={{fontSize:20}}>Total: <strong>{money(saleTotal)}</strong></div>
-              <div className="muted">Saldo pendiente: {money(Math.max(0,saleTotal-Number(salePaymentAmount||0)))}</div>
+            <div className="panel sales-panel">
+              <div className="panel-heading"><div><h3>4. Entrega</h3><p className="muted">El precio cobrado y el costo real se registran por separado.</p></div></div>
+              <div className="sales-fields-grid">
+                <label>Forma de entrega<select value={saleDeliveryType} onChange={e=>setSaleDeliveryType(e.target.value)}><option value="none">Retiro en tienda / sin delivery</option><option value="colectivo">Delivery del colectivo Somos</option><option value="privado">Delivery privado</option></select></label>
+                {saleDeliveryType !== "none" && <>
+                  <label className="sales-field-wide">Dirección del cliente *<textarea value={saleDeliveryAddress} onChange={e=>setSaleDeliveryAddress(e.target.value)} rows="2" required placeholder="Dirección exacta de entrega"/></label>
+                  <label>Delivery cobrado al cliente (C$)<input type="number" min="0" step="0.01" value={saleDeliveryCharge} onChange={e=>setSaleDeliveryCharge(e.target.value)} required/></label>
+                  <label>Costo real del delivery (C$)<input type="number" min="0" step="0.01" value={saleDeliveryCost} onChange={e=>setSaleDeliveryCost(e.target.value)} required/></label>
+                  <p className="muted sales-field-wide">Diferencia del delivery: <strong>{money(Number(saleDeliveryCharge || 0)-Number(saleDeliveryCost || 0))}</strong></p>
+                </>}
+              </div>
             </div>
-            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-              <button type="submit" disabled={savingForm || !saleCart.length}>{savingForm ? "Registrando..." : "Confirmar venta"}</button>
-              <button type="button" className="secondary" disabled={savingForm} onClick={()=>{setSaleCart([]);setSaleDiscount("0");setSalePaymentAmount("0");setNotice("Carrito vaciado.");}}>Vaciar carrito</button>
+            <div className="panel sales-panel">
+              <div className="panel-heading"><div><h3>5. Pago y notas</h3></div></div>
+              <div className="sales-fields-grid">
+                <label>Descuento (C$)<input type="number" min="0" max={saleSubtotal} step="0.01" value={saleDiscount} onChange={e=>setSaleDiscount(e.target.value)} required/></label>
+                <label>Moneda del pago<select value={salePaymentCurrency} onChange={e=>setSalePaymentCurrency(e.target.value)}><option value="NIO">Córdobas (C$)</option><option value="USD">Dólares (US$)</option></select></label>
+                <label>Monto recibido ({salePaymentCurrency === "USD" ? "US$" : "C$"})<input type="number" min="0" max={salePaymentCurrency === "USD" ? saleTotal / Number(usdNioRate || 1) : saleTotal} step="0.01" value={salePaymentAmount} onChange={e=>setSalePaymentAmount(e.target.value)} required/><small className="muted">Equivalente: {money(Number(salePaymentAmount||0) * (salePaymentCurrency === "USD" ? Number(usdNioRate||0) : 1))}</small></label>
+                <label>Método de pago<select value={salePaymentMethod} onChange={e=>setSalePaymentMethod(e.target.value)}><option value="cash">Efectivo</option><option value="transfer">Transferencia</option><option value="card">Tarjeta</option><option value="other">Otro</option></select></label>
+                <label>Referencia (opcional)<input value={salePaymentReference} onChange={e=>setSalePaymentReference(e.target.value)}/></label>
+                <label className="sales-field-wide">Notas (opcional)<textarea value={saleNotes} onChange={e=>setSaleNotes(e.target.value)} rows="2"/></label>
+              </div>
             </div>
-          </form>
-        </div>
+          </div>
+          <aside className="panel sales-summary">
+            <p className="eyebrow">RESUMEN</p><h3>Total de venta</h3>
+            <div><span>Productos</span><strong>{money(saleSubtotal)}</strong></div><div><span>Descuento</span><strong>− {money(saleDiscount)}</strong></div>
+            {saleDeliveryType !== "none" && <div><span>Delivery</span><strong>{money(saleDeliveryCharge)}</strong></div>}
+            <div className="sales-summary-total"><span>Total</span><strong>{money(saleTotal)}</strong></div>
+            <p className="muted">Pago recibido: {salePaymentCurrency === "USD" ? `US$${Number(salePaymentAmount||0).toFixed(2)} · ` : ""}{money(Number(salePaymentAmount||0)*(salePaymentCurrency === "USD" ? Number(usdNioRate||0) : 1))}</p>
+            <p className="muted">Saldo pendiente: {money(Math.max(0,saleTotal-(Number(salePaymentAmount||0)*(salePaymentCurrency === "USD" ? Number(usdNioRate||0) : 1))))}</p>
+            <button className="sales-confirm-button" type="submit" disabled={savingForm || !saleCart.length}>{savingForm ? "Registrando…" : "Confirmar venta"}</button>
+            <button type="button" className="secondary sales-clear-button" disabled={savingForm || !saleCart.length} onClick={()=>{setSaleCart([]);setSelectedSaleProduct("");setSaleDiscount("0");setSalePaymentAmount("0");setNotice("Carrito vaciado.");}}>Vaciar carrito</button>
+            <p className="sales-invoice-note">Al confirmar, se asigna un número consecutivo a la factura.</p>
+          </aside>
+        </form>
       </section>}
       {section === "Costos y compras" && isAdmin && <section className="content">
   <div className="panel" style={{ marginBottom: 16 }}>
@@ -1722,9 +1755,21 @@ function openCustomerForm(customer = null) {
       <label>Fecha estimada de llegada
         <input type="date" value={importForm.estimated_arrival} onChange={e=>setImportForm({...importForm,estimated_arrival:e.target.value})}/>
       </label>
-      <label>Total de compra (C$)
-        <input type="number" min="0" step="0.01" value={importForm.purchase_total} onChange={e=>setImportForm({...importForm,purchase_total:e.target.value})} required/>
-      </label>
+      <div className="import-purchase-entry">
+        <label>Moneda de la compra
+          <select value={importForm.purchase_currency} onChange={e=>setImportForm({...importForm,purchase_currency:e.target.value})}>
+            <option value="NIO">Córdobas (NIO)</option><option value="USD">Dólares (USD)</option>
+          </select>
+        </label>
+        <label>Total pagado ({importForm.purchase_currency === "USD" ? "US$" : "C$"})
+          <input type="number" min="0" step="0.01" value={importForm.purchase_amount_original} onChange={e=>setImportForm({...importForm,purchase_amount_original:e.target.value})} required/>
+        </label>
+        <div className="import-purchase-equivalent">
+          <span className="muted">Equivalente guardado en córdobas</span>
+          <strong>{money((Number(importForm.purchase_amount_original)||0) * (importForm.purchase_currency === "USD" ? Number(importForm.exchange_rate)||0 : 1))}</strong>
+          {importForm.purchase_currency === "USD" && <small>Tasa de la importación: C${Number(importForm.exchange_rate||0).toFixed(4)} por US$1</small>}
+        </div>
+      </div>
       <div className="import-subheading">Datos del envío</div>
       <label>Peso del paquete (lb)
         <input type="number" min="0" step="0.001" value={importForm.package_weight_lb} onChange={e=>setImportForm({...importForm,package_weight_lb:e.target.value})} placeholder="Ej. 5.5"/>
@@ -1792,7 +1837,7 @@ function openCustomerForm(customer = null) {
         <td>{({air:"Aéreo",sea:"Marítimo",ground:"Terrestre"})[item.transport_mode] || item.transport_mode}</td>
         <td>{item.ordered_at ? new Date(item.ordered_at + "T12:00:00").toLocaleDateString("es-NI") : "—"}</td>
         <td>{({pending:"Pendiente",in_transit:"En tránsito",received:"Recibida",cancelled:"Cancelada"})[item.status] || item.status}</td>
-        <td style={{textAlign:"right"}}>{money(item.purchase_total)}</td>
+        <td style={{textAlign:"right"}}>{item.purchase_currency === "USD" ? `US$${Number(item.purchase_amount_original ?? item.purchase_total).toFixed(2)} · ` : ""}{money(item.purchase_total)}</td>
         <td style={{textAlign:"right"}}>{money((item.import_packages ?? []).reduce((sum, pack) => sum + Number(pack.shipping_cost || 0), 0))}
           {item.status !== "received" && (item.import_shipment_items ?? []).length > 0 && <button className="secondary" type="button" disabled={savingForm} onClick={()=>receiveImport(item)}>{savingForm ? "Procesando…" : "Recibir productos"}</button>}
         </td>
@@ -2127,6 +2172,20 @@ function openCustomerForm(customer = null) {
 })()}
       <footer>Los datos se consultan desde Supabase. Las ventas se procesan mediante una operación transaccional.</footer>
     </main>
+    {invoiceData && <div className="invoice-print">
+      <article className="invoice-document">
+        <img className="invoice-watermark" src="/nica-decants-logo.svg" alt="" aria-hidden="true" />
+        <div className="invoice-content">
+          <header className="invoice-header"><img src="/nica-decants-logo.svg" alt="Nica Decants Perfume Store"/><div><p className="eyebrow">COMPROBANTE DE VENTA</p><h1>Factura {invoiceData.invoice}</h1><span>{invoiceData.createdAt}</span></div></header>
+          <section className="invoice-meta"><div><small>CLIENTE</small><strong>{invoiceData.customerName}</strong>{invoiceData.customerPhone && <span>{invoiceData.customerPhone}</span>}</div><div><small>ATENDIÓ</small><strong>{invoiceData.sellerName}</strong><span>{invoiceData.salesChannel}</span></div></section>
+          <table className="invoice-items"><thead><tr><th>Artículo</th><th>Cant.</th><th>Precio</th><th>Total</th></tr></thead><tbody>{invoiceData.items.map(item=><tr key={item.product_id}><td>{item.name}</td><td>{item.quantity} {item.sell_unit}</td><td>{money(item.unit_price)}</td><td>{money(Number(item.quantity)*Number(item.unit_price))}</td></tr>)}</tbody></table>
+          <section className="invoice-totals"><div><span>Subtotal</span><strong>{money(invoiceData.subtotal)}</strong></div><div><span>Descuento</span><strong>− {money(invoiceData.discount)}</strong></div>{invoiceData.deliveryType !== "none" && <div><span>Delivery</span><strong>{money(invoiceData.deliveryCharge)}</strong></div>}<div className="invoice-total"><span>Total</span><strong>{money(invoiceData.total)}</strong></div><div><span>Abonado ({invoiceData.paidCurrency})</span><strong>{invoiceData.paidCurrency === "USD" ? `US$${invoiceData.paidOriginal.toFixed(2)} · ` : ""}{money(invoiceData.paid)}</strong></div><div><span>Saldo pendiente</span><strong>{money(Math.max(0, invoiceData.total-invoiceData.paid))}</strong></div></section>
+          <section className="invoice-warranty"><h2>IMPORTANTE · CAMBIOS Y GARANTÍA</h2>{invoiceData.warranty.split("\n\n").map((paragraph,index)=><p key={index}>{paragraph}</p>)}</section>
+          <p className="invoice-footer">Gracias por tu compra · Nica Decants Perfume Store</p>
+          <div className="invoice-actions no-print"><button className="primary" onClick={()=>window.print()}>Imprimir / Guardar como PDF</button><button className="secondary" onClick={()=>setInvoiceData(null)}>Cerrar factura</button></div>
+        </div>
+      </article>
+    </div>}
   </div>;
 }
 
