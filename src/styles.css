@@ -83,3 +83,10 @@
 .import-operations-panel>div[style*="borderBottom"] p{margin:9px 0 0;color:#66756a;font-size:12px;line-height:1.6;white-space:normal}
 @media(max-width:1000px){.costs-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.costs-form{grid-template-columns:repeat(2,minmax(0,1fr))}.import-purchase-entry{grid-template-columns:repeat(2,minmax(0,1fr))}.import-item-row{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:640px){.costs-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.costs-metric-card{padding:14px}.costs-metric-card h3{font-size:18px}.costs-form{grid-template-columns:1fr}.costs-unit-preview{grid-column:1}.costs-submit{width:100%}.costs-overview-heading{align-items:flex-start}.costs-overview-heading button{width:100%;justify-content:center}.imports-page .panel-heading{display:flex}.import-purchase-entry,.import-item-row{grid-template-columns:1fr;padding:13px}.import-form-grid{grid-template-columns:minmax(0,1fr)!important}.import-total-card{align-items:flex-start}.import-operations-panel .import-total-card .primary{margin:0}}
+
+/* MANUAL_SELLER_COMMISSION */
+.finance-metrics{grid-template-columns:repeat(5,minmax(0,1fr))}
+.sales-summary-commission{color:#45684d;background:#f5f8f2;border:1px solid #e5ebe4;border-radius:9px;padding:10px 12px!important;margin:9px 0 3px}
+.sales-summary-commission strong{color:#315d3f}
+@media(max-width:1100px){.finance-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:640px){.finance-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
