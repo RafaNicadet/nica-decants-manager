@@ -31,3 +31,9 @@
 .inventory-history-panel{margin-top:18px}
 .inventory-history-panel table{min-width:760px}
 @media(max-width:700px){.seller-add-form{padding:12px}.inventory-transfer-form{padding:15px}}
+
+.inventory-product-recipe{grid-column:1/-1;padding:16px;border:1px solid #e1e9dc;border-radius:12px;background:#f8fbf6}
+.inventory-recipe-intro{grid-column:1/-1;margin:0;line-height:1.5}
+.inventory-check-field{display:flex!important;align-items:center;gap:10px!important;padding:12px;border:1px solid #e2e9df;border-radius:10px;background:#fafcf9}
+.inventory-check-field input{width:17px!important;height:17px}
+@media(max-width:700px){.inventory-product-recipe{grid-template-columns:1fr}}
