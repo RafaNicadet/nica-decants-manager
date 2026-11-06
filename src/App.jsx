@@ -91,7 +91,12 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
   const [inventoryEntryOpen, setInventoryEntryOpen] = useState(false);
   const [inventoryAdjustmentOpen, setInventoryAdjustmentOpen] = useState(false);
   const [locationStocks, setLocationStocks] = useState([]);
+  const [openVolumeStocks, setOpenVolumeStocks] = useState([]);
   const [locationMovements, setLocationMovements] = useState([]);
+  const [decantProductionOpen, setDecantProductionOpen] = useState(false);
+  const [decantProductionForm, setDecantProductionForm] = useState({product_id:"",location_id:"home",quantity:"1",note:""});
+  const [bundleActionOpen, setBundleActionOpen] = useState(false);
+  const [bundleActionForm, setBundleActionForm] = useState({product_id:"",location_id:"home",quantity:"1",action:"build",note:""});
   const [entryLocation, setEntryLocation] = useState("home");
   const [adjustmentLocation, setAdjustmentLocation] = useState("home");
   const [transferOpen, setTransferOpen] = useState(false);
@@ -115,7 +120,10 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
   const [savingForm, setSavingForm] = useState(false);
   const [productForm, setProductForm] = useState({
     sku: "", name: "", category: "General", kind: "finished",
-    sell_unit: "unidad", low_stock_threshold: "0", sale_price: "0"
+    sell_unit: "unidad", low_stock_threshold: "0", sale_price: "0",
+    bottle_volume_ml: "", is_decant: false, decant_source_product_id: "",
+    decant_size_ml: "", decant_container_product_id: "",
+    bundle_component_product_id: "", bundle_component_quantity: "1"
   });
   const [customerForm, setCustomerForm] = useState({
     full_name: "", phone: "", email: ""
@@ -233,11 +241,12 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
     async function load() {
       setLoading(true);
       setNotice("");
-      const [profileResult, productResult, customerResult, locationStockResult] = await Promise.all([
+      const [profileResult, productResult, customerResult, locationStockResult, openVolumeResult] = await Promise.all([
         supabase.from("profiles").select("display_name, role, active").eq("user_id", session.user.id).maybeSingle(),
-        supabase.from("products").select("id, sku, name, category, kind, sell_unit, stock_qty, low_stock_threshold, sale_price, active").eq("active", true).order("name"),
+        supabase.from("products").select("id, sku, name, category, kind, sell_unit, stock_qty, low_stock_threshold, sale_price, active, bottle_volume_ml, is_decant, decant_source_product_id, decant_size_ml, decant_container_product_id, bundle_component_product_id, bundle_component_quantity").eq("active", true).order("name"),
         supabase.from("customers").select("id, full_name, phone, email, active, created_at").eq("active", true).order("full_name"),
-        supabase.from("inventory_location_stock").select("product_id, location_id, quantity")
+        supabase.from("inventory_location_stock").select("product_id, location_id, quantity"),
+        supabase.from("inventory_open_perfume_ml").select("product_id, location_id, remaining_ml")
       ]);
       if (!alive) return;
       if (profileResult.error) setNotice(`No se pudo leer tu perfil: ${profileResult.error.message}`);
@@ -249,6 +258,8 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
       else setCustomers(customerResult.data ?? []);
       if (locationStockResult.error) setNotice(`No se pudo cargar el stock por ubicación: ${locationStockResult.error.message}`);
       else setLocationStocks(locationStockResult.data ?? []);
+      if (openVolumeResult.error) setNotice(`No se pudo cargar el perfume abierto: ${openVolumeResult.error.message}`);
+      else setOpenVolumeStocks(openVolumeResult.data ?? []);
       setLoading(false);
     }
     load();
@@ -536,6 +547,10 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
     return Number(locationStocks.find(row => row.product_id === productId && row.location_id === locationId)?.quantity || 0);
   }
 
+  function openMlAt(productId, locationId) {
+    return Number(openVolumeStocks.find(row => row.product_id === productId && row.location_id === locationId)?.remaining_ml || 0);
+  }
+
 
   function openProductForm(product = null) {
     setEditingProduct(product);
@@ -546,10 +561,20 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
       kind: product.kind,
       sell_unit: product.sell_unit || "unidad",
       low_stock_threshold: String(product.low_stock_threshold ?? 0),
-      sale_price: String(product.sale_price ?? 0)
+      sale_price: String(product.sale_price ?? 0),
+      bottle_volume_ml: product.bottle_volume_ml == null ? "" : String(product.bottle_volume_ml),
+      is_decant: Boolean(product.is_decant),
+      decant_source_product_id: product.decant_source_product_id || "",
+      decant_size_ml: product.decant_size_ml == null ? "" : String(product.decant_size_ml),
+      decant_container_product_id: product.decant_container_product_id || "",
+      bundle_component_product_id: product.bundle_component_product_id || "",
+      bundle_component_quantity: String(product.bundle_component_quantity ?? 1)
     } : {
       sku: "", name: "", category: "General", kind: "finished",
-      sell_unit: "unidad", low_stock_threshold: "0", sale_price: "0"
+      sell_unit: "unidad", low_stock_threshold: "0", sale_price: "0",
+      bottle_volume_ml: "", is_decant: false, decant_source_product_id: "",
+      decant_size_ml: "", decant_container_product_id: "",
+      bundle_component_product_id: "", bundle_component_quantity: "1"
     });
     setProductFormOpen(true);
   }
@@ -560,6 +585,19 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
       setNotice("Solo un administrador puede guardar productos.");
       return;
     }
+    if (productForm.kind === "source_perfume" &&
+        (!Number.isFinite(Number(productForm.bottle_volume_ml)) || Number(productForm.bottle_volume_ml) <= 0)) {
+      setNotice("Indica cuántos ml contiene la botella del perfume original.");return;
+    }
+    if (productForm.is_decant &&
+        (!productForm.decant_source_product_id || !productForm.decant_container_product_id ||
+         !Number.isFinite(Number(productForm.decant_size_ml)) || Number(productForm.decant_size_ml) <= 0)) {
+      setNotice("Para configurar un decant, selecciona el perfume, el frasco y su tamaño en ml.");return;
+    }
+    if (productForm.bundle_component_product_id &&
+        (!Number.isInteger(Number(productForm.bundle_component_quantity)) || Number(productForm.bundle_component_quantity) <= 0)) {
+      setNotice("La cantidad de unidades por paquete debe ser un número entero positivo.");return;
+    }
     setSavingForm(true);
     const payload = {
       sku: productForm.sku.trim() || null,
@@ -568,7 +606,14 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
       kind: productForm.kind,
       sell_unit: productForm.sell_unit.trim() || "unidad",
       low_stock_threshold: Number(productForm.low_stock_threshold),
-      sale_price: Number(productForm.sale_price)
+      sale_price: Number(productForm.sale_price),
+      bottle_volume_ml: productForm.kind === "source_perfume" && productForm.bottle_volume_ml ? Number(productForm.bottle_volume_ml) : null,
+      is_decant: Boolean(productForm.is_decant),
+      decant_source_product_id: productForm.is_decant ? (productForm.decant_source_product_id || null) : null,
+      decant_size_ml: productForm.is_decant && productForm.decant_size_ml ? Number(productForm.decant_size_ml) : null,
+      decant_container_product_id: productForm.is_decant ? (productForm.decant_container_product_id || null) : null,
+      bundle_component_product_id: productForm.bundle_component_product_id || null,
+      bundle_component_quantity: Number(productForm.bundle_component_quantity || 1)
     };
     const result = editingProduct
       ? await supabase.from("products").update(payload).eq("id", editingProduct.id)
@@ -960,15 +1005,18 @@ function openCustomerForm(customer = null) {
 
   async function refresh() {
     if (!supabase || !session) return;
-    const [productResult, stockResult, movementResult] = await Promise.all([
-      supabase.from("products").select("id, sku, name, category, kind, sell_unit, stock_qty, low_stock_threshold, sale_price, active").eq("active", true).order("name"),
+    const [productResult, stockResult, openVolumeResult, movementResult] = await Promise.all([
+      supabase.from("products").select("id, sku, name, category, kind, sell_unit, stock_qty, low_stock_threshold, sale_price, active, bottle_volume_ml, is_decant, decant_source_product_id, decant_size_ml, decant_container_product_id, bundle_component_product_id, bundle_component_quantity").eq("active", true).order("name"),
       supabase.from("inventory_location_stock").select("product_id, location_id, quantity"),
+      supabase.from("inventory_open_perfume_ml").select("product_id, location_id, remaining_ml"),
       profile?.role === "admin" ? supabase.from("inventory_location_movements").select("id, product_id, movement_kind, quantity, from_location_id, to_location_id, note, created_at").order("created_at", {ascending:false}).limit(25) : Promise.resolve({data:[],error:null})
     ]);
     if (productResult.error) setNotice(productResult.error.message);
     else setProducts(productResult.data ?? []);
     if (stockResult.error) setNotice(`No se pudo cargar el stock por ubicación: ${stockResult.error.message}`);
     else setLocationStocks(stockResult.data ?? []);
+    if (openVolumeResult.error) setNotice(`No se pudo cargar el perfume abierto: ${openVolumeResult.error.message}`);
+    else setOpenVolumeStocks(openVolumeResult.data ?? []);
     if (movementResult.error) setNotice(`No se pudo cargar el historial de ubicaciones: ${movementResult.error.message}`);
     else setLocationMovements(movementResult.data ?? []);
   }
@@ -993,6 +1041,51 @@ function openCustomerForm(customer = null) {
     setTransferOpen(false);
     await refresh();
     setNotice("Traslado registrado correctamente.");
+  }
+
+  async function saveDecantProduction(event) {
+    event.preventDefault();
+    const quantity=Number(decantProductionForm.quantity);
+    if(!decantProductionForm.product_id || !Number.isInteger(quantity) || quantity<=0) {
+      setNotice("Selecciona un producto decant e indica una cantidad entera mayor que cero.");return;
+    }
+    setSavingForm(true);
+    const {data,error}=await supabase.rpc("prepare_decants",{
+      p_decant_product_id:decantProductionForm.product_id,
+      p_location_id:decantProductionForm.location_id,
+      p_quantity:quantity,
+      p_note:decantProductionForm.note.trim()||null
+    });
+    setSavingForm(false);
+    if(error){setNotice("No se pudieron preparar los decants: "+error.message);return;}
+    setDecantProductionForm({...decantProductionForm,product_id:"",quantity:"1",note:""});
+    setDecantProductionOpen(false);
+    await refresh();
+    setNotice(`Decants preparados: ${data.quantity}. Se usaron ${data.source_ml_used} ml; quedan ${data.remaining_ml} ml abiertos en la ubicación.`);
+  }
+
+  async function saveBundleAction(event) {
+    event.preventDefault();
+    const quantity=Number(bundleActionForm.quantity);
+    if(!bundleActionForm.product_id || !Number.isInteger(quantity) || quantity<=0) {
+      setNotice("Selecciona un paquete e indica una cantidad entera mayor que cero.");return;
+    }
+    setSavingForm(true);
+    const {data,error}=await supabase.rpc("change_inventory_bundle",{
+      p_bundle_product_id:bundleActionForm.product_id,
+      p_location_id:bundleActionForm.location_id,
+      p_quantity:quantity,
+      p_action:bundleActionForm.action,
+      p_note:bundleActionForm.note.trim()||null
+    });
+    setSavingForm(false);
+    if(error){setNotice("No se pudo actualizar el paquete: "+error.message);return;}
+    setBundleActionForm({...bundleActionForm,product_id:"",quantity:"1",note:""});
+    setBundleActionOpen(false);
+    await refresh();
+    setNotice(bundleActionForm.action==="build"
+      ? `Paquetes armados: ${data.bundle_quantity}; unidades sueltas consumidas: ${data.component_quantity}.`
+      : `Paquetes desarmados: ${data.bundle_quantity}; unidades sueltas recuperadas: ${data.component_quantity}.`);
   }
 
   async function addSeller(event) {
@@ -1348,7 +1441,7 @@ function openCustomerForm(customer = null) {
         </div>
       </section>}
       {section === "Inventario" && <section className="content">
-        <div className="panel"><div className="panel-heading"><div><h3>Productos</h3><p className="muted">Los costos no se consultan ni se muestran en esta pantalla.</p></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="secondary" onClick={refresh}>Actualizar</button>{isAdmin && <><button className="secondary" onClick={() => setInventoryEntryOpen(!inventoryEntryOpen)}>Entrada de inventario</button><button className="secondary" onClick={() => setInventoryAdjustmentOpen(!inventoryAdjustmentOpen)}>Ajustar inventario</button><button className="secondary" onClick={() => setTransferOpen(!transferOpen)}>Trasladar entre ubicaciones</button><button onClick={() => openProductForm()}>Agregar producto</button></>}</div></div>
+        <div className="panel"><div className="panel-heading"><div><h3>Productos</h3><p className="muted">Los costos no se consultan ni se muestran en esta pantalla.</p></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="secondary" onClick={refresh}>Actualizar</button>{isAdmin && <><button className="secondary" onClick={() => setInventoryEntryOpen(!inventoryEntryOpen)}>Entrada de inventario</button><button className="secondary" onClick={() => setInventoryAdjustmentOpen(!inventoryAdjustmentOpen)}>Ajustar inventario</button><button className="secondary" onClick={() => setTransferOpen(!transferOpen)}>Trasladar entre ubicaciones</button><button className="secondary" onClick={() => setDecantProductionOpen(!decantProductionOpen)}>Preparar decants</button><button className="secondary" onClick={() => setBundleActionOpen(!bundleActionOpen)}>Armar / desarmar paquetes</button><button onClick={() => openProductForm()}>Agregar producto</button></>}</div></div>
           {productFormOpen && isAdmin && <form onSubmit={saveProduct} style={{display:"grid",gap:12,padding:"16px 0"}}>
             <h3>{editingProduct ? "Editar producto" : "Nuevo producto"}</h3>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12}}>
@@ -1360,7 +1453,25 @@ function openCustomerForm(customer = null) {
               <label>Stock mínimo<input type="number" min="0" step="0.001" required value={productForm.low_stock_threshold} onChange={e=>setProductForm({...productForm,low_stock_threshold:e.target.value})}/></label>
               <label>Precio de venta<input type="number" min="0" step="0.01" required value={productForm.sale_price} onChange={e=>setProductForm({...productForm,sale_price:e.target.value})}/></label>
             </div>
-            <p className="muted">Las existencias se mantendrán en cero hasta habilitar los movimientos de inventario.</p>
+            {productForm.kind === "source_perfume" && <label>Contenido de la botella original (ml) *
+              <input type="number" min="0.1" step="0.1" required value={productForm.bottle_volume_ml} onChange={e=>setProductForm({...productForm,bottle_volume_ml:e.target.value})} placeholder="Ej. 100"/>
+            </label>}
+            {productForm.kind === "finished" && <label className="inventory-check-field">
+              <input type="checkbox" checked={productForm.is_decant} onChange={e=>setProductForm({...productForm,is_decant:e.target.checked})}/>
+              Este producto es un decant preparado para vender
+            </label>}
+            {productForm.is_decant && <div className="form-grid inventory-product-recipe">
+              <p className="muted inventory-recipe-intro">Define de qué perfume y frasco sale este decant. La preparación descontará los ml y los envases automáticamente.</p>
+              <label>Perfume original<select required value={productForm.decant_source_product_id} onChange={e=>setProductForm({...productForm,decant_source_product_id:e.target.value})}><option value="">Selecciona perfume</option>{products.filter(p=>p.active&&p.kind==="source_perfume").map(p=><option key={p.id} value={p.id}>{p.name} · {p.bottle_volume_ml||"?"} ml</option>)}</select></label>
+              <label>Tamaño del decant (ml)<input type="number" min="0.1" step="0.1" required value={productForm.decant_size_ml} onChange={e=>setProductForm({...productForm,decant_size_ml:e.target.value})} placeholder="5 o 10"/></label>
+              <label>Frasco vacío utilizado<select required value={productForm.decant_container_product_id} onChange={e=>setProductForm({...productForm,decant_container_product_id:e.target.value})}><option value="">Selecciona frasco vacío</option>{products.filter(p=>p.active&&p.kind==="supply"&&!p.bundle_component_product_id).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+            </div>}
+            {productForm.kind === "supply" && <div className="form-grid inventory-product-recipe">
+              <p className="muted inventory-recipe-intro">Opcional: configura este producto como presentación empacada de otro suministro para armarla y desarmarla desde Inventario.</p>
+              <label>Unidades que contiene el paquete (déjalo vacío para unidad suelta)<input type="number" min="1" step="1" value={productForm.bundle_component_product_id ? productForm.bundle_component_quantity : ""} onChange={e=>setProductForm({...productForm,bundle_component_quantity:e.target.value})} placeholder="Ej. 12"/></label>
+              <label>Producto suelto que consume<select value={productForm.bundle_component_product_id} onChange={e=>setProductForm({...productForm,bundle_component_product_id:e.target.value})}><option value="">No es paquete</option>{products.filter(p=>p.active&&p.kind==="supply"&&p.id!==editingProduct?.id&&!p.bundle_component_product_id&&!p.is_decant).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+            </div>}
+            <p className="muted">Las existencias iniciales se registran como cero; luego agrega compras o entradas por ubicación.</p>
             <div style={{display:"flex",gap:8}}><button type="submit" disabled={savingForm}>{savingForm ? "Guardando..." : "Guardar producto"}</button><button type="button" className="secondary" onClick={()=>setProductFormOpen(false)}>Cancelar</button></div>
           </form>}
           
@@ -1437,8 +1548,29 @@ function openCustomerForm(customer = null) {
             </div>
             <div className="finance-actions"><button className="primary" disabled={savingForm}>{savingForm?"Registrando…":"Confirmar traslado"}</button><button type="button" className="secondary" onClick={()=>setTransferOpen(false)}>Cancelar</button></div>
           </form>}
+          {decantProductionOpen && isAdmin && <form onSubmit={saveDecantProduction} className="panel inventory-transfer-form">
+            <div className="panel-heading"><div><p className="eyebrow">PRODUCCIÓN</p><h3>Preparar decants</h3><p className="muted">Se descuentan los ml del perfume y un frasco vacío por cada decant preparado. Si se abre una botella, su saldo restante queda registrado en ml.</p></div></div>
+            <div className="form-grid">
+              <label>Producto decant<select required value={decantProductionForm.product_id} onChange={e=>setDecantProductionForm({...decantProductionForm,product_id:e.target.value})}><option value="">Selecciona el decant</option>{products.filter(p=>p.active&&p.is_decant).map(p=><option key={p.id} value={p.id}>{p.name} · {p.decant_size_ml} ml</option>)}</select></label>
+              <label>Ubicación<select value={decantProductionForm.location_id} onChange={e=>setDecantProductionForm({...decantProductionForm,location_id:e.target.value})}><option value="home">Casa</option><option value="collective">Colectivo Somos</option></select></label>
+              <label>Unidades a preparar<input type="number" min="1" step="1" required value={decantProductionForm.quantity} onChange={e=>setDecantProductionForm({...decantProductionForm,quantity:e.target.value})}/></label>
+              <label className="sales-field-wide">Nota opcional<input value={decantProductionForm.note} onChange={e=>setDecantProductionForm({...decantProductionForm,note:e.target.value})} placeholder="Lote o referencia"/></label>
+            </div>
+            <div className="finance-actions"><button className="primary" disabled={savingForm}>{savingForm?"Preparando…":"Registrar preparación"}</button><button type="button" className="secondary" onClick={()=>setDecantProductionOpen(false)}>Cancelar</button></div>
+          </form>}
+          {bundleActionOpen && isAdmin && <form onSubmit={saveBundleAction} className="panel inventory-transfer-form">
+            <div className="panel-heading"><div><p className="eyebrow">PRESENTACIONES</p><h3>Armar o desarmar paquetes</h3><p className="muted">Armar descuenta unidades sueltas; desarmar devuelve esas unidades al inventario.</p></div></div>
+            <div className="form-grid">
+              <label>Operación<select value={bundleActionForm.action} onChange={e=>setBundleActionForm({...bundleActionForm,action:e.target.value})}><option value="build">Armar paquetes</option><option value="unbuild">Desarmar paquetes y recuperar unidades</option></select></label>
+              <label>Producto empacado<select required value={bundleActionForm.product_id} onChange={e=>setBundleActionForm({...bundleActionForm,product_id:e.target.value})}><option value="">Selecciona una presentación</option>{products.filter(p=>p.active&&p.kind==="supply"&&p.bundle_component_product_id).map(p=><option key={p.id} value={p.id}>{p.name} · {p.bundle_component_quantity} unidades por paquete</option>)}</select></label>
+              <label>Ubicación<select value={bundleActionForm.location_id} onChange={e=>setBundleActionForm({...bundleActionForm,location_id:e.target.value})}><option value="home">Casa</option><option value="collective">Colectivo Somos</option></select></label>
+              <label>Cantidad de paquetes<input type="number" min="1" step="1" required value={bundleActionForm.quantity} onChange={e=>setBundleActionForm({...bundleActionForm,quantity:e.target.value})}/></label>
+              <label className="sales-field-wide">Nota opcional<input value={bundleActionForm.note} onChange={e=>setBundleActionForm({...bundleActionForm,note:e.target.value})}/></label>
+            </div>
+            <div className="finance-actions"><button className="primary" disabled={savingForm}>{savingForm?"Registrando…":bundleActionForm.action==="build"?"Armar paquetes":"Desarmar paquetes"}</button><button type="button" className="secondary" onClick={()=>setBundleActionOpen(false)}>Cancelar</button></div>
+          </form>}
           <div className="search-box"><Search size={17}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar nombre, SKU o categoría"/></div>
-          <ProductTable products={filteredProducts} empty="No hay productos para mostrar." onEdit={isAdmin ? openProductForm : null} showLocations locationStocks={locationStocks}/>
+          <ProductTable products={filteredProducts} empty="No hay productos para mostrar." onEdit={isAdmin ? openProductForm : null} showLocations locationStocks={locationStocks} openVolumeStocks={openVolumeStocks}/>
           {isAdmin && <div className="panel inventory-history-panel"><div className="panel-heading"><div><p className="eyebrow">TRAZABILIDAD</p><h3>Movimientos por ubicación</h3><p className="muted">Últimos movimientos de entradas, ventas, ajustes y traslados.</p></div><button className="secondary" onClick={refresh}>Actualizar historial</button></div>
             {locationMovements.length ? <div className="table-wrap"><table><thead><tr><th>Fecha</th><th>Producto</th><th>Movimiento</th><th>Cantidad</th><th>De</th><th>A</th><th>Nota</th></tr></thead><tbody>{locationMovements.map(m=><tr key={m.id}><td>{new Date(m.created_at).toLocaleString("es-NI")}</td><td>{products.find(p=>p.id===m.product_id)?.name || "Producto"}</td><td>{{opening:"Inicial",purchase:"Entrada",sale:"Venta",adjustment:"Ajuste",return:"Devolución",transfer:"Traslado"}[m.movement_kind] || m.movement_kind}</td><td>{m.quantity}</td><td>{m.from_location_id==="home"?"Casa":m.from_location_id==="collective"?"Colectivo Somos":"—"}</td><td>{m.to_location_id==="home"?"Casa":m.to_location_id==="collective"?"Colectivo Somos":"—"}</td><td>{m.note || "—"}</td></tr>)}</tbody></table></div> : <Empty text="Todavía no hay movimientos por ubicación."/>}
           </div>}
@@ -2320,10 +2452,11 @@ function openCustomerForm(customer = null) {
 function Metric({icon,label,value}) {
   return <div className="metric"><div className="metric-icon">{icon}</div><p>{label}</p><strong>{value}</strong></div>;
 }
-function ProductTable({products,empty,onEdit=null,showLocations=false,locationStocks=[]}) {
+function ProductTable({products,empty,onEdit=null,showLocations=false,locationStocks=[],openVolumeStocks=[]}) {
   if (!products.length) return <Empty text={empty}/>;
   const quantityAt=(productId,locationId)=>Number(locationStocks.find(row=>row.product_id===productId&&row.location_id===locationId)?.quantity||0);
-  return <div className="table-wrap"><table><thead><tr><th>Producto</th><th>Categoría</th><th>Tipo</th><th>Existencias</th>{showLocations&&<><th>Casa</th><th>Colectivo Somos</th></>}<th>Precio de venta</th>{onEdit && <th>Acciones</th>}</tr></thead><tbody>{products.map(p=><tr key={p.id}><td><strong>{p.name}</strong><small>{p.sku || "Sin SKU"}</small></td><td>{p.category}</td><td>{({finished:"Producto terminado",supply:"Suministro",source_perfume:"Perfume original"})[p.kind] || p.kind}</td><td><span className={Number(p.stock_qty)<=Number(p.low_stock_threshold)?"stock low":"stock"}>{p.stock_qty} {p.sell_unit}</span></td>{showLocations&&<><td>{quantityAt(p.id,"home")} {p.sell_unit}</td><td>{quantityAt(p.id,"collective")} {p.sell_unit}</td></>}<td>{money(p.sale_price)}</td>{onEdit && <td><button className="secondary" onClick={()=>onEdit(p)}>Editar</button></td>}</tr>)}</tbody></table></div>;
+  const openMlAt=(productId,locationId)=>Number(openVolumeStocks.find(row=>row.product_id===productId&&row.location_id===locationId)?.remaining_ml||0);
+  return <div className="table-wrap"><table><thead><tr><th>Producto</th><th>Categoría</th><th>Tipo</th><th>Existencias</th>{showLocations&&<><th>Casa</th><th>Colectivo Somos</th><th>Perfume abierto · Casa (ml)</th><th>Perfume abierto · Colectivo (ml)</th></>}<th>Precio de venta</th>{onEdit && <th>Acciones</th>}</tr></thead><tbody>{products.map(p=><tr key={p.id}><td><strong>{p.name}</strong><small>{p.sku || "Sin SKU"}</small></td><td>{p.category}</td><td>{p.is_decant?"Decant listo":p.bundle_component_product_id?"Paquete":({finished:"Producto terminado",supply:"Suministro",source_perfume:"Perfume original"})[p.kind] || p.kind}</td><td><span className={Number(p.stock_qty)<=Number(p.low_stock_threshold)?"stock low":"stock"}>{p.stock_qty} {p.sell_unit}</span></td>{showLocations&&<><td>{quantityAt(p.id,"home")} {p.sell_unit}</td><td>{quantityAt(p.id,"collective")} {p.sell_unit}</td><td>{p.kind==="source_perfume"?openMlAt(p.id,"home")+" ml":"—"}</td><td>{p.kind==="source_perfume"?openMlAt(p.id,"collective")+" ml":"—"}</td></>}<td>{money(p.sale_price)}</td>{onEdit && <td><button className="secondary" onClick={()=>onEdit(p)}>Editar</button></td>}</tr>)}</tbody></table></div>;
 }
 function Empty({text}) { return <div className="empty-state"><Package size={28}/><p>{text}</p></div>; }
 
