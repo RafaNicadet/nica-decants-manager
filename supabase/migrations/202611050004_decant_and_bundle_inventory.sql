@@ -268,7 +268,10 @@ declare
   v_component_stock numeric(14,3);
   v_component_qty numeric(14,3);
   v_component_cost numeric(14,4);
+  v_component_cost_known boolean := false;
   v_bundle_cost numeric(14,4);
+  v_bundle_cost_known boolean := false;
+  v_bundle_unit_cost numeric(14,4);
 begin
   if v_user is null or not private.is_admin() then raise exception 'Solo un administrador puede armar o desarmar paquetes.'; end if;
   if p_location_id not in ('home','collective') or p_quantity is null or p_quantity <= 0
@@ -281,7 +284,10 @@ begin
   end if;
   select * into v_component from public.products
    where id=v_bundle.bundle_component_product_id and active for update;
-  if not found or v_component.id=v_bundle.id then raise exception 'El producto componente no es válido.'; end if;
+  if not found or v_component.id=v_bundle.id or v_component.kind <> 'supply'
+     or v_component.bundle_component_product_id is not null or v_component.is_decant then
+    raise exception 'El producto componente debe ser un suministro unitario válido.';
+  end if;
   v_component_qty := p_quantity * v_bundle.bundle_component_quantity;
 
   insert into public.inventory_location_stock(product_id,location_id,quantity)
@@ -293,6 +299,9 @@ begin
    where product_id=v_component.id and location_id=p_location_id for update;
 
   select unit_cost into v_component_cost from private.product_costs where product_id=v_component.id;
+  v_component_cost_known := found;
+  select unit_cost into v_bundle_cost from private.product_costs where product_id=v_bundle.id;
+  v_bundle_cost_known := found;
   if p_action='build' then
     if v_component_stock < v_component_qty then
       raise exception 'No hay suficientes unidades sueltas. Necesitas % y hay %.',v_component_qty,v_component_stock;
@@ -303,13 +312,22 @@ begin
     update public.inventory_location_stock set quantity=quantity+p_quantity,updated_at=now()
      where product_id=v_bundle.id and location_id=p_location_id;
     update public.products set stock_qty=stock_qty+p_quantity,updated_at=now() where id=v_bundle.id;
-    if found then
-      v_bundle_cost := round(v_component_cost*v_bundle.bundle_component_quantity,4);
-      insert into private.product_costs(product_id,unit_cost,updated_at)
-      values(v_bundle.id,v_bundle_cost,now())
-      on conflict(product_id) do update set unit_cost=excluded.unit_cost,updated_at=now();
-      insert into private.product_cost_history(product_id,unit_cost,source,note,created_by)
-      values(v_bundle.id,v_bundle_cost,'production',coalesce(p_note,'Armado de paquete'),v_user);
+    if v_component_cost_known then
+      v_bundle_unit_cost := round(v_component_cost*v_bundle.bundle_component_quantity,4);
+      if v_bundle_cost_known then
+        v_bundle_cost := round((v_bundle.stock_qty*v_bundle_cost+p_quantity*v_bundle_unit_cost)/
+          greatest(v_bundle.stock_qty+p_quantity,1),4);
+      elsif v_bundle.stock_qty=0 then
+        v_bundle_cost := v_bundle_unit_cost;
+        v_bundle_cost_known := true;
+      end if;
+      if v_bundle_cost_known then
+        insert into private.product_costs(product_id,unit_cost,updated_at)
+        values(v_bundle.id,v_bundle_cost,now())
+        on conflict(product_id) do update set unit_cost=excluded.unit_cost,updated_at=now();
+        insert into private.product_cost_history(product_id,unit_cost,source,note,created_by)
+        values(v_bundle.id,v_bundle_cost,'production',coalesce(p_note,'Armado de paquete'),v_user);
+      end if;
     end if;
   else
     if v_bundle_stock < p_quantity then raise exception 'No hay suficientes paquetes armados para desarmar.'; end if;
