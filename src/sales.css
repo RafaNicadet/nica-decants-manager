@@ -25,3 +25,9 @@
 
 .sales-summary-commission{color:#45684d;background:#f5f8f2;border:1px solid #e5ebe4;border-radius:9px;padding:10px 12px!important;margin:9px 0 3px}
 .sales-summary-commission strong{color:#315d3f}
+
+.seller-add-form{display:grid;gap:12px;margin-top:12px;padding:16px;border:1px solid #e0e8dc;border-radius:12px;background:#f8faf6}
+.inventory-transfer-form{margin:18px 0;padding:20px;border:1px solid #e2e9df;border-radius:14px;background:linear-gradient(120deg,#fff,#f7faf5)}
+.inventory-history-panel{margin-top:18px}
+.inventory-history-panel table{min-width:760px}
+@media(max-width:700px){.seller-add-form{padding:12px}.inventory-transfer-form{padding:15px}}
