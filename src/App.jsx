@@ -137,6 +137,9 @@ const [purchaseSaving, setPurchaseSaving] = useState(false);
   const [sellerAddOpen, setSellerAddOpen] = useState(false);
   const [sellerNewName, setSellerNewName] = useState("");
   const [saleProductLocation, setSaleProductLocation] = useState("home");
+  const [saleQuickDecantOpen, setSaleQuickDecantOpen] = useState(false);
+  const [saleQuickDecantProductId, setSaleQuickDecantProductId] = useState("");
+  const [saleQuickDecantQuantity, setSaleQuickDecantQuantity] = useState("1");
   const [invoiceData, setInvoiceData] = useState(null);
   const [saleQuantity, setSaleQuantity] = useState("1");
   const [saleCustomerId, setSaleCustomerId] = useState("");
@@ -851,6 +854,53 @@ function openCustomerForm(customer = null) {
     setNotice("");
     setSelectedSaleProduct("");
     setSaleQuantity("1");
+  }
+
+  async function prepareDecantForSale() {
+    const product = products.find(p => p.id === saleQuickDecantProductId && p.active && p.is_decant);
+    const quantity = Number(saleQuickDecantQuantity);
+    if (!product) {
+      setNotice("Configura primero el producto decant que vas a preparar.");
+      return;
+    }
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      setNotice("Indica una cantidad entera mayor que cero.");
+      return;
+    }
+    setSavingForm(true);
+    const { data, error } = await supabase.rpc("prepare_decants", {
+      p_decant_product_id: product.id,
+      p_location_id: saleProductLocation,
+      p_quantity: quantity,
+      p_note: "Preparación inmediata desde una venta"
+    });
+    setSavingForm(false);
+    if (error) {
+      setNotice("No se pudo preparar el decant: " + error.message);
+      return;
+    }
+    setSaleCart(previous => {
+      const existing = previous.find(item => item.product_id === product.id && item.location_id === saleProductLocation);
+      if (existing) {
+        return previous.map(item => item.product_id === product.id && item.location_id === saleProductLocation
+          ? { ...item, quantity: Number(item.quantity) + quantity }
+          : item);
+      }
+      return [...previous, {
+        product_id: product.id,
+        location_id: saleProductLocation,
+        name: product.name,
+        quantity,
+        unit_price: Number(product.sale_price),
+        stock_qty: Number(product.stock_qty),
+        sell_unit: product.sell_unit || "unidad"
+      }];
+    });
+    setSaleQuickDecantOpen(false);
+    setSaleQuickDecantProductId("");
+    setSaleQuickDecantQuantity("1");
+    await refresh();
+    setNotice(`${product.name}: se prepararon ${quantity}; se usaron ${data.source_ml_used} ml y se agregó a la venta. El precio usado es el configurado en el producto.`);
   }
 
   async function saveSale(event) {
@@ -1606,6 +1656,25 @@ function openCustomerForm(customer = null) {
                 <label>Sale desde<select value={saleProductLocation} onChange={e=>setSaleProductLocation(e.target.value)}><option value="home">Casa</option><option value="collective">Colectivo Somos</option></select></label>
                 <label>Cantidad<input type="number" min="0.001" step="0.001" value={saleQuantity} onChange={e=>setSaleQuantity(e.target.value)}/></label>
                 <button className="sales-add-button" type="button" onClick={addSaleItem}>+ Agregar artículo</button>
+              </div>
+              <div className="sales-quick-decant">
+                <button type="button" className="secondary" onClick={() => setSaleQuickDecantOpen(!saleQuickDecantOpen)}>
+                  {saleQuickDecantOpen ? "Cerrar preparación rápida" : "+ Preparar decant para esta venta"}
+                </button>
+                {saleQuickDecantOpen && <div className="sales-quick-decant-box">
+                  <p className="muted">Selecciona el decant configurado, su cantidad y la ubicación elegida arriba. Se registra el perfume y los ml consumidos, y las unidades preparadas se agregan a esta venta.</p>
+                  <div className="sales-add-row">
+                    <label>Decant a preparar
+                      <select value={saleQuickDecantProductId} onChange={e=>setSaleQuickDecantProductId(e.target.value)}>
+                        <option value="">Selecciona presentación y perfume</option>
+                        {products.filter(p=>p.active&&p.is_decant).map(p=><option key={p.id} value={p.id}>{p.name} · {p.decant_size_ml} ml · {money(p.sale_price)}</option>)}
+                      </select>
+                    </label>
+                    <label>Unidades a preparar<input type="number" min="1" step="1" value={saleQuickDecantQuantity} onChange={e=>setSaleQuickDecantQuantity(e.target.value)}/></label>
+                    <button type="button" className="sales-add-button" onClick={prepareDecantForSale} disabled={savingForm}>{savingForm?"Preparando…":"Preparar y agregar a la venta"}</button>
+                  </div>
+                  <small>El precio será el precio actual del producto. Si cancelas la venta después, los decants preparados quedarán como existencias.</small>
+                </div>}
               </div>
             </div>
             <div className="panel sales-panel">
