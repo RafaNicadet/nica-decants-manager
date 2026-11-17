@@ -37,3 +37,8 @@
 .inventory-check-field{display:flex!important;align-items:center;gap:10px!important;padding:12px;border:1px solid #e2e9df;border-radius:10px;background:#fafcf9}
 .inventory-check-field input{width:17px!important;height:17px}
 @media(max-width:700px){.inventory-product-recipe{grid-template-columns:1fr}}
+
+.sales-quick-decant{margin-top:14px;padding-top:14px;border-top:1px solid #e5ebe4}
+.sales-quick-decant-box{display:grid;gap:12px;margin-top:12px;padding:16px;border:1px solid #e0e8dc;border-radius:12px;background:#f8faf6}
+.sales-quick-decant-box p{margin:0;line-height:1.5}
+.sales-quick-decant-box small{color:#64776a;line-height:1.45}
