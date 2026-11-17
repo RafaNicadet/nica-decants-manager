@@ -715,6 +715,10 @@ async function saveInventoryEntry(event) {
       setNotice("Ingresa una cantidad mayor que cero.");
       return;
     }
+    if (products.find(p=>p.id===inventoryEntryProductId)?.kind==="source_perfume" && !Number.isInteger(quantity)) {
+      setNotice("Para un perfume original, ingresa el número de botellas cerradas; por ejemplo, 1 botella.");
+      return;
+    }
 
     if (
       inventoryEntryUnitCost.trim() === "" ||
@@ -1498,12 +1502,12 @@ function openCustomerForm(customer = null) {
               <label>Nombre *<input required value={productForm.name} onChange={e=>setProductForm({...productForm,name:e.target.value})}/></label>
               <label>SKU<input value={productForm.sku} onChange={e=>setProductForm({...productForm,sku:e.target.value})}/></label>
               <label>Categoría<input value={productForm.category} onChange={e=>setProductForm({...productForm,category:e.target.value})}/></label>
-              <label>Tipo<select value={productForm.kind} onChange={e=>setProductForm({...productForm,kind:e.target.value})}><option value="finished">Producto terminado</option><option value="supply">Suministro</option><option value="source_perfume">Perfume original</option></select></label>
+              <label>Tipo<select value={productForm.kind} onChange={e=>setProductForm({...productForm,kind:e.target.value,sell_unit:e.target.value==="source_perfume"?"botella":productForm.sell_unit})}><option value="finished">Producto terminado</option><option value="supply">Suministro</option><option value="source_perfume">Perfume original</option></select></label>
               <label>Unidad de venta<input required value={productForm.sell_unit} onChange={e=>setProductForm({...productForm,sell_unit:e.target.value})}/></label>
               <label>Stock mínimo<input type="number" min="0" step="0.001" required value={productForm.low_stock_threshold} onChange={e=>setProductForm({...productForm,low_stock_threshold:e.target.value})}/></label>
               <label>Precio de venta<input type="number" min="0" step="0.01" required value={productForm.sale_price} onChange={e=>setProductForm({...productForm,sale_price:e.target.value})}/></label>
             </div>
-            {productForm.kind === "source_perfume" && <label>Contenido de la botella original (ml) *
+            {productForm.kind === "source_perfume" && <label>Contenido por botella cerrada (ml) *
               <input type="number" min="0.1" step="0.1" required value={productForm.bottle_volume_ml} onChange={e=>setProductForm({...productForm,bottle_volume_ml:e.target.value})} placeholder="Ej. 100"/>
             </label>}
             {productForm.kind === "finished" && <label className="inventory-check-field">
@@ -1537,8 +1541,8 @@ function openCustomerForm(customer = null) {
             <label>Ubicación donde ingresa *
               <select value={entryLocation} onChange={e=>setEntryLocation(e.target.value)}><option value="home">Casa</option><option value="collective">Colectivo Somos</option></select>
             </label>
-            <label>Cantidad que ingresa *
-              <input type="number" min="0.001" step="any" required value={inventoryEntryQuantity} onChange={e=>setInventoryEntryQuantity(e.target.value)} />
+            <label>{products.find(p=>p.id===inventoryEntryProductId)?.kind==="source_perfume" ? "Botellas cerradas que ingresan *" : "Cantidad que ingresa *"}
+              <input type="number" min="0.001" step={products.find(p=>p.id===inventoryEntryProductId)?.kind==="source_perfume" ? "1" : "any"} required value={inventoryEntryQuantity} onChange={e=>setInventoryEntryQuantity(e.target.value)} />
             </label>
             <label>Costo de compra por unidad (C$) *
               <input type="number" min="0" step="0.0001" required value={inventoryEntryUnitCost} onChange={e=>setInventoryEntryUnitCost(e.target.value)} placeholder="Ej.: 12.50" />
